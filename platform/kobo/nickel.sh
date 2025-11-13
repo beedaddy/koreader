@@ -18,8 +18,8 @@ unset LC_ALL STARDICT_DATA_DIR EXT_FONT_DIR
 unset KO_DONT_GRAB_INPUT
 unset FBINK_FORCE_ROTA
 
-if [ -e "/etc/init.d/display-init.sh" ]; then
-    /etc/init.d/display-init.sh
+if [ -e "/usr/bin/animator.sh" ]; then
+    animator.sh /etc/images/${PRODUCT}-on-*.raw.gz &
 fi
 
 if [ -e "/etc/init.d/on-animator.sh" ]; then
