@@ -4,6 +4,7 @@ local Screen = require("device").screen
 local ffiutil = require("ffi/util")
 local lfs = require("libs/libkoreader-lfs")
 local logger = require("logger")
+local time = require("ui/time")
 local util = require("util")
 local _ = require("gettext")
 local T = ffiutil.template
@@ -54,7 +55,7 @@ local Wikipedia = {
    wiki_phtml_params = {
        action = "parse",
        format = "json",
-       -- we only need the following informations
+       -- we only need the following pieces of information
        prop = "text|sections|displaytitle|revid",
        -- page = nil, -- text to lookup, will be added below
        -- disabletoc = "", -- if we want to remove toc IN html
@@ -67,7 +68,7 @@ local Wikipedia = {
    wiki_images_params = { -- same as previous one, with just text html
        action = "parse",
        format = "json",
-       -- we only need the following informations
+       -- we only need the following pieces of information
        prop = "text",
        -- page = nil, -- text to lookup, will be added below
        redirects = "",
@@ -346,7 +347,7 @@ function Wikipedia:getFullPageImages(wiki_title, lang)
                     end
                     local width = tonumber(timg:match([[width="([^"]*)"]]))
                     local height = tonumber(timg:match([[height="([^"]*)"]]))
-                    -- Ignore img without width and height, which should exlude
+                    -- Ignore img without width and height, which should exclude
                     -- javascript maps and other unsupported stuff
                     if width and height then
                         -- Images in the html we got seem to be x4.5 the size of
@@ -582,7 +583,7 @@ end
 
 
 -- UTF8 of unicode geometrical shapes we'll prepend to wikipedia section headers,
--- to help identifying hierarchy (othewise, the small font size differences helps).
+-- to help identifying hierarchy (otherwise, the small font size differences helps).
 -- Best if identical to the ones used above for prettifying full plain text page.
 -- These chosen ones are available in most fonts (prettier symbols
 -- exist in unicode, but are available in a few fonts only) and
@@ -696,6 +697,10 @@ function Wikipedia:createEpub(epub_path, page, lang, with_images)
         local src = img_tag:match([[src="([^"]*)"]])
         if src == nil or src == "" then
             logger.info("no src found in ", img_tag)
+            return nil
+        end
+        if src:sub(1,5) == "data:" then
+            logger.dbg("skipping data URI", src)
             return nil
         end
         if src:sub(1,2) == "//" then
@@ -831,28 +836,31 @@ function Wikipedia:createEpub(epub_path, page, lang, with_images)
     -- Open the zip file (with .tmp for now, as crengine may still
     -- have a handle to the final epub_path, and we don't want to
     -- delete a good one if we fail/cancel later)
+    local Archiver = require("ffi/archiver")
+    local epub = Archiver.Writer:new{}
     local epub_path_tmp = epub_path .. ".tmp"
-    local ZipWriter = require("ffi/zipwriter")
-    local epub = ZipWriter:new{}
-    if not epub:open(epub_path_tmp) then
+    if not epub:open(epub_path_tmp, "epub") then
         return false
     end
 
     -- We now create and add all the required epub files
+    local mtime = os.time()
 
     -- ----------------------------------------------------------------
     -- /mimetype : always "application/epub+zip"
-    epub:add("mimetype", "application/epub+zip")
+    epub:setZipCompression("store")
+    epub:addFileFromMemory("mimetype", "application/epub+zip", mtime)
+    epub:setZipCompression("deflate")
 
     -- ----------------------------------------------------------------
     -- /META-INF/container.xml : always the same content
-    epub:add("META-INF/container.xml", [[
+    epub:addFileFromMemory("META-INF/container.xml", [[
 <?xml version="1.0"?>
 <container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
   <rootfiles>
     <rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/>
   </rootfiles>
-</container>]])
+</container>]], mtime)
 
     -- ----------------------------------------------------------------
     -- OEBPS/content.opf : metadata + list of other files (paths relative to OEBPS/ directory)
@@ -911,14 +919,14 @@ function Wikipedia:createEpub(epub_path, page, lang, with_images)
   </spine>
 </package>
 ]])
-    epub:add("OEBPS/content.opf", table.concat(content_opf_parts))
+    epub:addFileFromMemory("OEBPS/content.opf", table.concat(content_opf_parts), mtime)
 
     -- ----------------------------------------------------------------
     -- OEBPS/stylesheet.css
     -- crengine will use its own data/epub.css, we just add/fix a few styles
     -- to look more alike wikipedia web pages (that the user can ignore
     -- with "Embedded Style" off)
-    epub:add("OEBPS/stylesheet.css", [[
+    epub:addFileFromMemory("OEBPS/stylesheet.css", [[
 /* Generic styling picked from our epub.css (see it for comments),
    to give this epub a book look even if used with html5.css */
 body {
@@ -1265,7 +1273,7 @@ abbr.abbr {
     display: none;
 }
 /* hiding .noprint may discard some interesting links */
-]])
+]], mtime)
 
     -- ----------------------------------------------------------------
     -- OEBPS/toc.ncx : table of content
@@ -1346,7 +1354,7 @@ abbr.abbr {
   </navMap>
 </ncx>
 ]])
-    epub:add("OEBPS/toc.ncx", table.concat(toc_ncx_parts))
+    epub:addFileFromMemory("OEBPS/toc.ncx", table.concat(toc_ncx_parts), mtime)
 
     -- ----------------------------------------------------------------
     -- HTML table of content
@@ -1417,7 +1425,7 @@ abbr.abbr {
     -- crengine does not support the <math> family of tags for displaying formulas,
     -- which results in lots of space taken by individual character in the formula,
     -- each on a single line...
-    -- Also, usally, these <math> tags are followed by a <img> tag pointing to a
+    -- Also, usually, these <math> tags are followed by a <img> tag pointing to a
     -- SVG version of the formula, that we took care earlier to change the url to
     -- point to a PNG version of the formula (which is still not perfect, as it does
     -- not adjust to the current html font size, but it is at least readable).
@@ -1442,7 +1450,7 @@ abbr.abbr {
     end
     html = html:gsub([[href="/wiki/([^"]*)"]], cleanWikiPageTitle)
 
-    -- Remove href from links to non existant wiki page so they are not clickable :
+    -- Remove href from links to nonexistent wiki page so they are not clickable :
     -- <a href="/w/index.php?title=PageTitle&amp;action=edit&amp;redlink=1" class="new"
     --          title="PageTitle">PageTitle____on</a>
     -- (removal of the href="" will make them non clickable)
@@ -1453,12 +1461,12 @@ abbr.abbr {
 
     if self.wiki_prettify then
         -- Prepend some symbols to section titles for a better visual feeling of hierarchy
-        html = html:gsub("<h1>", "<h1> "..h1_sym.." ")
-        html = html:gsub("<h2>", "<h2> "..h2_sym.." ")
-        html = html:gsub("<h3>", "<h3> "..h3_sym.." ")
-        html = html:gsub("<h4>", "<h4> "..h4_sym.." ")
-        html = html:gsub("<h5>", "<h5> "..h5_sym.." ")
-        html = html:gsub("<h6>", "<h6> "..h6_sym.." ")
+        html = html:gsub("(<h1[^>]*>)", "%1 "..h1_sym.." ")
+        html = html:gsub("(<h2[^>]*>)", "%1 "..h2_sym.." ")
+        html = html:gsub("(<h3[^>]*>)", "%1 "..h3_sym.." ")
+        html = html:gsub("(<h4[^>]*>)", "%1 "..h4_sym.." ")
+        html = html:gsub("(<h5[^>]*>)", "%1 "..h5_sym.." ")
+        html = html:gsub("(<h6[^>]*>)", "%1 "..h6_sym.." ")
     end
 
     -- Note: in all the gsub patterns above, we used lowercase for tags and attributes
@@ -1474,7 +1482,7 @@ abbr.abbr {
     if self:isWikipediaLanguageRTL(lang) then
         html_dir = ' dir="rtl"'
     end
-    epub:add("OEBPS/content.html", string.format([[
+    epub:addFileFromMemory("OEBPS/content.html", string.format([[
 <html xmlns="http://www.w3.org/1999/xhtml"%s>
 <head>
   <title>%s</title>
@@ -1488,7 +1496,7 @@ abbr.abbr {
 %s
 </body>
 </html>
-]], html_dir, page_cleaned, page_htmltitle, lang:upper(), saved_on, see_online_version, html))
+]], html_dir, page_cleaned, page_htmltitle, lang:upper(), saved_on, see_online_version, html), mtime)
 
     -- Force a GC to free the memory we used till now (the second call may
     -- help reclaim more memory).
@@ -1499,14 +1507,22 @@ abbr.abbr {
     -- OEBPS/images/*
     if include_images then
         local nb_images = #images
+        local before_images_time = time.now()
+        local time_prev = before_images_time
         for inum, img in ipairs(images) do
-            -- Process can be interrupted at this point between each image download
+            -- Process can be interrupted every second between image downloads
             -- by tapping while the InfoMessage is displayed
             -- We use the fast_refresh option from image #2 for a quicker download
-            local go_on = UI:info(T(_("Retrieving image %1 / %2 …"), inum, nb_images), inum >= 2)
-            if not go_on then
-                cancelled = true
-                break
+            local go_on
+            if time.to_ms(time.since(time_prev)) > 1000 then
+                time_prev = time.now()
+                go_on = UI:info(T(_("Retrieving image %1 / %2 …"), inum, nb_images), inum >= 2)
+                if not go_on then
+                    cancelled = true
+                    break
+                end
+            else
+                UI:info(T(_("Retrieving image %1 / %2 …"), inum, nb_images), inum >= 2, true)
             end
             local src = img.src
             if use_img_2x and img.src2x then
@@ -1522,11 +1538,11 @@ abbr.abbr {
             end
             if success then
                 -- Images do not need to be compressed, so spare some cpu cycles
-                local no_compression = true
-                if img.mimetype == "image/svg+xml" then -- except for SVG images (which are XML text)
-                    no_compression = false
+                if img.mimetype ~= "image/svg+xml" then -- except for SVG images (which are XML text)
+                    epub:setZipCompression("store")
                 end
-                epub:add("OEBPS/"..img.imgpath, content, no_compression)
+                epub:addFileFromMemory("OEBPS/"..img.imgpath, content, mtime)
+                epub:setZipCompression("deflate")
             else
                 go_on = UI:confirm(T(_("Downloading image %1 failed. Continue anyway?"), inum), _("Stop"), _("Continue"))
                 if not go_on then
@@ -1535,6 +1551,7 @@ abbr.abbr {
                 end
             end
         end
+        logger.dbg("Image download time for:", page_htmltitle, time.to_ms(time.since(before_images_time)), "ms")
     end
 
     -- Done with adding files

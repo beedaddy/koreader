@@ -781,7 +781,7 @@ end
 
 local VirtualKeyboard = FocusManager:extend{
     name = "VirtualKeyboard",
-    visible = nil,
+    visible = false,
     lock_visibility = false,
     covers_footer = true,
     modal = true,
@@ -817,6 +817,7 @@ local VirtualKeyboard = FocusManager:extend{
         fa = "fa_keyboard",
         fr = "fr_keyboard",
         he = "he_keyboard",
+        hu = "hu_keyboard",
         ja = "ja_keyboard",
         ka = "ka_keyboard",
         ko_KR = "ko_KR_keyboard",
@@ -826,6 +827,7 @@ local VirtualKeyboard = FocusManager:extend{
         ro = "ro_keyboard",
         ru = "ru_keyboard",
         sk = "sk_keyboard",
+        sr = "sr_keyboard",
         sv = "sv_keyboard",
         th = "th_keyboard",
         tr = "tr_keyboard",
@@ -938,8 +940,14 @@ end
 function VirtualKeyboard:onClose()
     UIManager:close(self)
     if self.inputbox and Device:hasDPad() then
-        -- let input text handle Back event to unfocus
-        -- otherwise, another extra Back event needed
+        -- Let InputText handle this KeyPress "Back" event to unfocus, otherwise, another extra Back event is needed.
+        -- NOTE: Keep in mind InputText is a special snowflake, and implements the raw onKeyPress handler for this!
+        -- Also, notify another widget that actually may want to know when *we* get closed, i.e., the parent (Input*Dialog*).
+        -- We need to do this manually because InputText's onKeyPress handler will very likely return true,
+        -- stopping event propagation (c.f., the last hasDPad branch of said handler).
+        if self.inputbox and self.inputbox.parent and self.inputbox.parent.onKeyboardClosed then
+            self.inputbox.parent:onKeyboardClosed()
+        end
         return false
     end
     return true
@@ -974,6 +982,10 @@ function VirtualKeyboard:onCloseWidget()
     --       this could be moved to InputDialog's onShow/onCloseWidget handlers (but, it would allow input on unfocused fields).
     -- NOTE: But something more complex, possibly based on an in-class ref count would have to be implemented in order to be able to deal
     --       with multiple InputDialogs being shown and closed in asymmetric fashion... Ugh.
+    -- NOTE: You would also have to deal with the fact that, once InputText loses focus,
+    --       it will stop dealing with key events because it wouldn't know where to send them when there are multiple live instances of it,
+    --       specifically because, given how we propagate events, the key event will go to whichever inputtext comes earlier in the container's array...
+    -- c.f., 2ccf7601fe1cbd9794aea0be754ea4166b9767d7 in #12361 and the comments surrounding it ;).
     Device:stopTextInput()
 end
 

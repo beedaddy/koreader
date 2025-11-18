@@ -23,7 +23,7 @@ local Document = {
 
     GAMMA_NO_GAMMA = 1.0,
 
-    -- override bbox from orignal page's getUsedBBox
+    -- override bbox from original page's getUsedBBox
     bbox = nil, -- table
 
     -- flag to show whether the document was opened successfully
@@ -67,24 +67,9 @@ function Document:_init()
     self.info = {
         -- whether the document is pageable
         has_pages = false,
-        -- whether words can be provided
-        has_words = false,
-        -- whether hyperlinks can be provided
-        has_hyperlinks = false,
-        -- whether (native to format) annotations can be provided
-        has_annotations = false,
-
-        -- whether pages can be rotated
-        is_rotatable = false,
-
         number_of_pages = 0,
         -- if not pageable, length of the document in pixels
         doc_height = 0,
-
-        -- other metadata
-        title = "",
-        author = "",
-        date = ""
     }
 
     -- Should be updated by a call to Document.updateColorRendering(self) in subclasses
@@ -501,9 +486,9 @@ function Document:renderPage(pageno, rect, zoom, rotation, gamma, hinting)
     -- Make the context match the rotation,
     -- by pointing at the rotated origin via coordinates offsets.
     -- NOTE: We rotate our *Screen* bb on rotation (SetRotationMode), not the document,
-    --       so we hardly ever exercize this codepath...
-    --       AFAICT, the only thing that will *ever* (attempt to) rotate the document is ReaderRotation's key bindings (RotationUpdate).
-    --- @fixme: And whaddayano, it's broken ;). The aptly named key binds in question are J/K, I shit you not.
+    --       so we hardly ever exercise this codepath...
+    --       AFAICT, the only thing that *ever* (attempted to) rotate the document was ReaderRotation's key bindings (RotationUpdate).
+    --- @note: It was broken as all hell (it had likely never worked outside of its original implementation in KPV), and has been removed in #12658
     if rotation == 90 then
         dc:setOffset(page_size.w, 0)
     elseif rotation == 180 then

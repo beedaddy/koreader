@@ -3,7 +3,6 @@ local Blitbuffer = require("ffi/blitbuffer")
 local BottomContainer = require("ui/widget/container/bottomcontainer")
 local CenterContainer = require("ui/widget/container/centercontainer")
 local Device = require("device")
-local DocSettings = require("docsettings")
 local Font = require("ui/font")
 local FrameContainer = require("ui/widget/container/framecontainer")
 local Geom = require("ui/geometry")
@@ -19,11 +18,9 @@ local ProgressWidget = require("ui/widget/progresswidget")
 local ReadCollection = require("readcollection")
 local Size = require("ui/size")
 local TextBoxWidget = require("ui/widget/textboxwidget")
-local TextWidget = require("ui/widget/textwidget")
 local UnderlineContainer = require("ui/widget/container/underlinecontainer")
 local VerticalGroup = require("ui/widget/verticalgroup")
 local VerticalSpan = require("ui/widget/verticalspan")
-local WidgetContainer = require("ui/widget/container/widgetcontainer")
 local logger = require("logger")
 local util = require("util")
 local _ = require("gettext")
@@ -47,49 +44,6 @@ local abandoned_mark
 local complete_mark
 local collection_mark
 local progress_widget
-
--- ItemShortCutIcon (for keyboard navigation) is private to menu.lua and can't be accessed,
--- so we need to redefine it
-local ItemShortCutIcon = WidgetContainer:extend{
-    dimen = Geom:new{ x = 0, y = 0, w = Screen:scaleBySize(22), h = Screen:scaleBySize(22) },
-    key = nil,
-    bordersize = Size.border.default,
-    radius = 0,
-    style = "square",
-}
-
-function ItemShortCutIcon:init()
-    if not self.key then
-        return
-    end
-    local radius = 0
-    local background = Blitbuffer.COLOR_WHITE
-    if self.style == "rounded_corner" then
-        radius = math.floor(self.width/2)
-    elseif self.style == "grey_square" then
-        background = Blitbuffer.COLOR_LIGHT_GRAY
-    end
-    local sc_face
-    if self.key:len() > 1 then
-        sc_face = Font:getFace("ffont", 14)
-    else
-        sc_face = Font:getFace("scfont", 22)
-    end
-    self[1] = FrameContainer:new{
-        padding = 0,
-        bordersize = self.bordersize,
-        radius = radius,
-        background = background,
-        dimen = self.dimen:copy(),
-        CenterContainer:new{
-            dimen = self.dimen,
-            TextWidget:new{
-                text = self.key,
-                face = sc_face,
-            },
-        },
-    }
-end
 
 -- We may find a better algorithm, or just a set of
 -- nice looking combinations of 3 sizes to iterate thru
@@ -154,7 +108,7 @@ function FakeCover:init()
     if not authors and title and self.filename and self.filename:sub(1,title:len()) == title then
         bd_wrap_title_as_filename = true
         -- Replace a hyphen surrounded by spaces (which most probably was
-        -- used to separate Authors/Title/Serie/Year/Categorie in the
+        -- used to separate Authors/Title/Series/Year/Categories in the
         -- filename with a \n
         title = title:gsub(" %- ", "\n")
         -- Same with |
@@ -165,9 +119,9 @@ function FakeCover:init()
         -- can also have some meaning, so we can't just remove them.
         -- But at least, make dots breakable (they wouldn't be if not
         -- followed by a space), by adding to them a zero-width-space,
-        -- so the dots stay on the right of their preceeding word.
+        -- so the dots stay on the right of their preceding word.
         title = title:gsub("%.", ".\u{200B}")
-        -- Except for a last dot near end of title that might preceed
+        -- Except for a last dot near end of title that might precede
         -- a file extension: we'd rather want the dot and its suffix
         -- together on a last line: so, move the zero-width-space
         -- before it.
@@ -376,11 +330,7 @@ function MosaicMenuItem:init()
         }
         -- To keep a simpler widget structure, this shortcut icon will not
         -- be part of it, but will be painted over the widget in our paintTo
-        self.shortcut_icon = ItemShortCutIcon:new{
-            dimen = shortcut_icon_dimen,
-            key = self.shortcut,
-            style = self.shortcut_style,
-        }
+        self.shortcut_icon = self.menu:getItemShortCutIcon(shortcut_icon_dimen, self.shortcut, self.shortcut_style)
     end
 
     self.percent_finished = nil
@@ -402,7 +352,7 @@ function MosaicMenuItem:init()
         },
     }
 
-    -- We now build the minimal widget container that won't change after udpate()
+    -- We now build the minimal widget container that won't change after update()
 
     -- As done in MenuItem
     -- for compatibility with keyboard navigation
@@ -434,7 +384,7 @@ function MosaicMenuItem:init()
 end
 
 function MosaicMenuItem:update()
-    -- We will be a disctinctive widget whether we are a directory,
+    -- We will be a distinctive widget whether we are a directory,
     -- a known file with image / without image, or a not yet known file
     local widget
 
@@ -529,10 +479,6 @@ function MosaicMenuItem:update()
     else -- file
         self.file_deleted = self.entry.dim -- entry with deleted file from History or selected file from FM
 
-        if self.do_hint_opened and DocSettings:hasSidecarFile(self.filepath) then
-            self.been_opened = true
-        end
-
         local bookinfo = BookInfoManager:getBookInfo(self.filepath, self.do_cover_image)
 
         if bookinfo and self.do_cover_image and not bookinfo.ignore_cover and not self.file_deleted then
@@ -556,26 +502,13 @@ function MosaicMenuItem:update()
             end
         end
 
+        local book_info = self.menu.getBookInfo(self.filepath)
+        self.been_opened = book_info.been_opened
         if bookinfo then -- This book is known
-            -- Current page / pages are available or more accurate in .sdr/metadata.lua
-            -- We use a cache (cleaned at end of this browsing session) to store
-            -- page, percent read and book status from sidecar files, to avoid
-            -- re-parsing them when re-rendering a visited page
-            -- This cache is shared with ListMenu, so we need to fill it with the same
-            -- info here than there, even if we don't need them all here.
-            if not self.menu.cover_info_cache then
-                self.menu.cover_info_cache = {}
-            end
-            local percent_finished, status
-            if DocSettings:hasSidecarFile(self.filepath) then
-                self.been_opened = true
-                self.menu:updateCache(self.filepath, nil, true, bookinfo.pages) -- create new cache entry if absent
-                dummy, percent_finished, status =
-                    unpack(self.menu.cover_info_cache[self.filepath], 1, self.menu.cover_info_cache[self.filepath].n)
-            end
-            self.percent_finished = percent_finished
-            self.status = status
-            self.show_progress_bar = self.status ~= "complete" and BookInfoManager:getSetting("show_progress_in_mosaic") and self.percent_finished
+            self.percent_finished = book_info.percent_finished
+            self.status = book_info.status
+            self.show_progress_bar = self.status ~= "complete"
+                and BookInfoManager:getSetting("show_progress_in_mosaic") and self.percent_finished
 
             local cover_bb_used = false
             self.bookinfo_found = true
@@ -613,31 +546,18 @@ function MosaicMenuItem:update()
                 self._has_cover_image = true
             else
                 -- add Series metadata if requested
-                local series_mode = BookInfoManager:getSetting("series_mode")
                 local title_add, authors_add
-                if bookinfo.series then
-                    if bookinfo.series_index then
-                        bookinfo.series = BD.auto(bookinfo.series .. " #" .. bookinfo.series_index)
-                    else
-                        bookinfo.series = BD.auto(bookinfo.series)
-                    end
+                local series_mode = BookInfoManager:getSetting("series_mode")
+                if series_mode and bookinfo.series then
+                    local series = bookinfo.series_index and bookinfo.series .. " #" .. bookinfo.series_index
+                        or bookinfo.series
+                    series = BD.auto(series)
                     if series_mode == "append_series_to_title" then
-                        if bookinfo.title then
-                            title_add = " - " .. bookinfo.series
-                        else
-                            title_add = bookinfo.series
-                        end
-                    end
-                    if not bookinfo.authors then
-                        if series_mode == "append_series_to_authors" or series_mode == "series_in_separate_line" then
-                            authors_add = bookinfo.series
-                        end
-                    else
-                        if series_mode == "append_series_to_authors" then
-                            authors_add = " - " .. bookinfo.series
-                        elseif series_mode == "series_in_separate_line" then
-                            authors_add = "\n \n" .. bookinfo.series
-                        end
+                        title_add = bookinfo.title and " - " .. series or series
+                    elseif series_mode == "append_series_to_authors" then
+                        authors_add = bookinfo.authors and " - " .. series or series
+                    else -- "series_in_separate_line"
+                        authors_add = bookinfo.authors and "\n \n" .. series or series
                     end
                 end
                 local bottom_pad = Size.padding.default
@@ -665,7 +585,7 @@ function MosaicMenuItem:update()
                     }
                 }
             end
-            -- In case we got a blitbuffer and didnt use it (ignore_cover, wikipedia), free it
+            -- In case we got a blitbuffer and didn't use it (ignore_cover, wikipedia), free it
             if bookinfo.cover_bb and not cover_bb_used then
                 bookinfo.cover_bb:free()
             end
@@ -744,7 +664,7 @@ function MosaicMenuItem:paintTo(bb, x, y)
     -- other paintings are anchored to the sub-widget (cover image)
     local target =  self[1][1][1]
 
-    if self.entry.order == nil -- File manager, History
+    if self.menu.name ~= "collections" -- do not show collection mark in collections
             and ReadCollection:isFileInCollections(self.filepath) then
         -- top right corner
         local ix, rect_ix
@@ -883,7 +803,6 @@ function MosaicMenu:_recalculateDimen()
             self.others_height = self.others_height + 2
         end
         if not self.no_title then
-            self.others_height = self.others_height + self.header_padding
             self.others_height = self.others_height + self.title_bar.dimen.h
         end
         if self.page_info then
@@ -902,7 +821,7 @@ function MosaicMenu:_recalculateDimen()
     }
 
     -- Create or replace corner_mark if needed
-    -- 1/12 (larger) or 1/16 (smaller) of cover looks allright
+    -- 1/12 (larger) or 1/16 (smaller) of cover looks alright
     local mark_size = math.floor(math.min(self.item_width, self.item_height) / 8)
     if mark_size ~= corner_mark_size then
         corner_mark_size = mark_size
@@ -960,11 +879,15 @@ function MosaicMenu:_updateItemsBuildUI()
     local cur_row = nil
     local idx_offset = (self.page - 1) * self.perpage
     local line_layout = {}
+    local select_number
     for idx = 1, self.perpage do
         local index = idx_offset + idx
         local entry = self.item_table[index]
         if entry == nil then break end
         entry.idx = index
+        if index == self.itemnumber then -- focused item
+            select_number = idx
+        end
         -- Keyboard shortcuts, as done in Menu
         local item_shortcut, shortcut_style
         if self.is_enable_shortcut then
@@ -1018,6 +941,7 @@ function MosaicMenu:_updateItemsBuildUI()
     end
     table.insert(self.layout, line_layout)
     table.insert(self.item_group, VerticalSpan:new{ width = self.item_margin }) -- bottom padding
+    return select_number
 end
 
 return MosaicMenu

@@ -15,154 +15,274 @@ local TextViewer = require("ui/widget/textviewer")
 local UIManager = require("ui/uimanager")
 local JSON = require("json")
 local Screen = require("device").screen
-local ffiutil  = require("ffi/util")
+local ffiUtil  = require("ffi/util")
 local logger = require("logger")
 local util = require("util")
-local T = ffiutil.template
+local T = ffiUtil.template
 local _ = require("gettext")
 
--- From https://cloud.google.com/translate/docs/languages
--- 20230514: 132 supported languages
+-- Extracted from https://translate.google.com/
+-- 20251003: 249 supported languages
 local AUTODETECT_LANGUAGE = "auto"
 local SUPPORTED_LANGUAGES = {
     -- @translators Many of the names for languages can be conveniently found pre-translated in the relevant language of this Wikipedia article: https://en.wikipedia.org/wiki/List_of_ISO_639-1_codes
+    ab = _("Abkhaz"),
+    ace = _("Acehnese"),
+    ach = _("Acholi"),
+    aa = _("Afar"),
     af = _("Afrikaans"),
     sq = _("Albanian"),
+    alz = _("Alur"),
     am = _("Amharic"),
     ar = _("Arabic"),
     hy = _("Armenian"),
     as = _("Assamese"),
+    av = _("Avar"),
+    awa = _("Awadhi"),
     ay = _("Aymara"),
     az = _("Azerbaijani"),
+    ban = _("Balinese"),
+    bal = _("Baluchi"),
     bm = _("Bambara"),
+    bci = _("Baoulé"),
+    ba = _("Bashkir"),
     eu = _("Basque"),
+    btx = _("Batak Karo"),
+    bts = _("Batak Simalungun"),
+    bbc = _("Batak Toba"),
     be = _("Belarusian"),
+    bem = _("Bemba"),
     bn = _("Bengali"),
+    bew = _("Betawi"),
     bho = _("Bhojpuri"),
+    bik = _("Bikol"),
     bs = _("Bosnian"),
+    br = _("Breton"),
     bg = _("Bulgarian"),
+    bua = _("Buryat"),
+    yue = _("Cantonese"),
     ca = _("Catalan"),
     ceb = _("Cebuano"),
+    ch = _("Chamorro"),
+    ce = _("Chechen"),
+    ny = _("Chichewa"),
+    -- @translators Many of the names for languages can be conveniently found pre-translated in the relevant language of this Wikipedia article: https://en.wikipedia.org/wiki/List_of_ISO_639-1_codes
     zh = _("Chinese (Simplified)"), -- "Simplified Chinese may be specified either by zh-CN or zh"
     zh_TW = _("Chinese (Traditional)"), -- converted to "zh-TW" below
+    chk = _("Chuukese"),
+    cv = _("Chuvash"),
     co = _("Corsican"),
+    crh = _("Crimean Tatar (Cyrillic)"),
+    ["crh-Latn"] = _("Crimean Tatar (Latin)"),
     hr = _("Croatian"),
     cs = _("Czech"),
     da = _("Danish"),
+    ["fa-AF"] = _("Dari"),
     dv = _("Dhivehi"),
+    din = _("Dinka"),
     doi = _("Dogri"),
+    dov = _("Dombe"),
     nl = _("Dutch"),
+    dyu = _("Dyula"),
+    dz = _("Dzongkha"),
     en = _("English"),
     eo = _("Esperanto"),
     et = _("Estonian"),
     ee = _("Ewe"),
-    fil = _("Filipino (Tagalog)"),
+    fo = _("Faroese"),
+    fj = _("Fijian"),
+    tl = _("Filipino"),
     fi = _("Finnish"),
+    fon = _("Fon"),
     fr = _("French"),
+    ["fr-CA"] = _("French (Canada)"),
     fy = _("Frisian"),
+    fur = _("Friulian"),
+    ff = _("Fulani"),
+    gaa = _("Ga"),
     gl = _("Galician"),
     ka = _("Georgian"),
     de = _("German"),
     el = _("Greek"),
     gn = _("Guarani"),
-    -- @translators Many of the names for languages can be conveniently found pre-translated in the relevant language of this Wikipedia article: https://en.wikipedia.org/wiki/List_of_ISO_639-1_codes
     gu = _("Gujarati"),
     ht = _("Haitian Creole"),
+    -- @translators Many of the names for languages can be conveniently found pre-translated in the relevant language of this Wikipedia article: https://en.wikipedia.org/wiki/List_of_ISO_639-1_codes
+    cnh = _("Hakha Chin"),
     ha = _("Hausa"),
     haw = _("Hawaiian"),
     he = _("Hebrew"), -- "Hebrew may be specified either by he or iw"
+    hil = _("Hiligaynon"),
     hi = _("Hindi"),
     hmn = _("Hmong"),
     hu = _("Hungarian"),
+    hrx = _("Hunsrik"),
+    iba = _("Iban"),
     is = _("Icelandic"),
     ig = _("Igbo"),
     ilo = _("Ilocano"),
     id = _("Indonesian"),
+    ["iu-Latn"] = _("Inuktut (Latin)"),
+    iu = _("Inuktut (Syllabics)"),
     ga = _("Irish"),
     it = _("Italian"),
+    jam = _("Jamaican Patois"),
     ja = _("Japanese"),
     jw = _("Javanese"),
-    -- @translators Many of the names for languages can be conveniently found pre-translated in the relevant language of this Wikipedia article: https://en.wikipedia.org/wiki/List_of_ISO_639-1_codes
+    kac = _("Jingpo"),
+    kl = _("Kalaallisut"),
     kn = _("Kannada"),
+    kr = _("Kanuri"),
+    pam = _("Kapampangan"),
     kk = _("Kazakh"),
+    kha = _("Khasi"),
     km = _("Khmer"),
+    cgg = _("Kiga"),
+    kg = _("Kikongo"),
     rw = _("Kinyarwanda"),
+    ktu = _("Kituba"),
+    trp = _("Kokborok"),
+    kv = _("Komi"),
     gom = _("Konkani"),
     ko = _("Korean"),
     kri = _("Krio"),
-    ku = _("Kurdish"),
+    ku = _("Kurdish (Kurmanji)"),
     ckb = _("Kurdish (Sorani)"),
+    -- @translators Many of the names for languages can be conveniently found pre-translated in the relevant language of this Wikipedia article: https://en.wikipedia.org/wiki/List_of_ISO_639-1_codes
     ky = _("Kyrgyz"),
     lo = _("Lao"),
+    ltg = _("Latgalian"),
     la = _("Latin"),
     lv = _("Latvian"),
+    lij = _("Ligurian"),
+    li = _("Limburgish"),
     ln = _("Lingala"),
     lt = _("Lithuanian"),
+    lmo = _("Lombard"),
     lg = _("Luganda"),
+    luo = _("Luo"),
     lb = _("Luxembourgish"),
     mk = _("Macedonian"),
+    mad = _("Madurese"),
     mai = _("Maithili"),
+    mak = _("Makassar"),
     mg = _("Malagasy"),
     ms = _("Malay"),
+    ["ms-Arab"] = _("Malay (Jawi)"),
     ml = _("Malayalam"),
     mt = _("Maltese"),
+    mam = _("Mam"),
+    gv = _("Manx"),
     mi = _("Maori"),
     mr = _("Marathi"),
+    mh = _("Marshallese"),
+    mwr = _("Marwadi"),
+    mfe = _("Mauritian Creole"),
+    chm = _("Meadow Mari"),
+    ["mni-Mtei"] = _("Meiteilon (Manipuri)"),
+    min = _("Minang"),
     lus = _("Mizo"),
     mn = _("Mongolian"),
     my = _("Myanmar (Burmese)"),
+    ["bm-Nkoo"] = _("NKo"),
+    nhe = _("Nahuatl (Eastern Huasteca)"),
+    ["ndc-ZW"] = _("Ndau"),
+    nr = _("Ndebele (South)"),
+    new = _("Nepalbhasa (Newari)"),
+    -- @translators Many of the names for languages can be conveniently found pre-translated in the relevant language of this Wikipedia article: https://en.wikipedia.org/wiki/List_of_ISO_639-1_codes
     ne = _("Nepali"),
     no = _("Norwegian"),
-    ny = _("Nyanja (Chichewa)"),
+    nus = _("Nuer"),
+    oc = _("Occitan"),
     ["or"] = _("Odia (Oriya)"),
     om = _("Oromo"),
+    os = _("Ossetian"),
+    pag = _("Pangasinan"),
+    pap = _("Papiamento"),
     ps = _("Pashto"),
     fa = _("Persian"),
     pl = _("Polish"),
-    pt = _("Portuguese"),
-    pa = _("Punjabi"),
+    pt = _("Portuguese (Brazil)"),
+    ["pt-PT"] = _("Portuguese (Portugal)"),
+    pa = _("Punjabi (Gurmukhi)"),
+    ["pa-Arab"] = _("Punjabi (Shahmukhi)"),
     qu = _("Quechua"),
+    kek = _("Qʼeqchiʼ"),
+    rom = _("Romani"),
     ro = _("Romanian"),
+    rn = _("Rundi"),
     ru = _("Russian"),
+    se = _("Sami (North)"),
     sm = _("Samoan"),
+    sg = _("Sango"),
     sa = _("Sanskrit"),
+    ["sat-Latn"] = _("Santali (Latin)"),
+    sat = _("Santali (Ol Chiki)"),
     gd = _("Scots Gaelic"),
     nso = _("Sepedi"),
     sr = _("Serbian"),
     st = _("Sesotho"),
+    crs = _("Seychellois Creole"),
+    shn = _("Shan"),
     sn = _("Shona"),
+    scn = _("Sicilian"),
+    szl = _("Silesian"),
     sd = _("Sindhi"),
-    si = _("Sinhala (Sinhalese)"),
+    si = _("Sinhala"),
     sk = _("Slovak"),
+    -- @translators Many of the names for languages can be conveniently found pre-translated in the relevant language of this Wikipedia article: https://en.wikipedia.org/wiki/List_of_ISO_639-1_codes
     sl = _("Slovenian"),
     so = _("Somali"),
     es = _("Spanish"),
     su = _("Sundanese"),
+    sus = _("Susu"),
     sw = _("Swahili"),
+    ss = _("Swati"),
     sv = _("Swedish"),
-    tl = _("Tagalog (Filipino)"),
+    ty = _("Tahitian"),
     tg = _("Tajik"),
+    ["ber-Latn"] = _("Tamazight"),
+    ber = _("Tamazight (Tifinagh)"),
     ta = _("Tamil"),
     tt = _("Tatar"),
     te = _("Telugu"),
+    tet = _("Tetum"),
     th = _("Thai"),
+    bo = _("Tibetan"),
     ti = _("Tigrinya"),
+    tiv = _("Tiv"),
+    tpi = _("Tok Pisin"),
+    to = _("Tongan"),
+    lua = _("Tshiluba"),
     ts = _("Tsonga"),
+    tn = _("Tswana"),
+    tcy = _("Tulu"),
+    tum = _("Tumbuka"),
     tr = _("Turkish"),
     tk = _("Turkmen"),
-    ak = _("Twi (Akan)"),
+    tyv = _("Tuvan"),
+    ak = _("Twi"),
+    udm = _("Udmurt"),
     uk = _("Ukrainian"),
     ur = _("Urdu"),
     ug = _("Uyghur"),
     uz = _("Uzbek"),
+    ve = _("Venda"),
+    vec = _("Venetian"),
     vi = _("Vietnamese"),
-    cy = _("Welsh"),
+    war = _("Waray"),
     -- @translators Many of the names for languages can be conveniently found pre-translated in the relevant language of this Wikipedia article: https://en.wikipedia.org/wiki/List_of_ISO_639-1_codes
+    cy = _("Welsh"),
+    wo = _("Wolof"),
     xh = _("Xhosa"),
+    sah = _("Yakut"),
     yi = _("Yiddish"),
     yo = _("Yoruba"),
+    yua = _("Yucatec Maya"),
+    zap = _("Zapotec"),
     zu = _("Zulu"),
 }
+
 -- Fix zh_TW => zh-TW:
 SUPPORTED_LANGUAGES["zh-TW"] = SUPPORTED_LANGUAGES["zh_TW"]
 SUPPORTED_LANGUAGES["zh_TW"] = nil
@@ -170,6 +290,7 @@ SUPPORTED_LANGUAGES["zh_TW"] = nil
 local ALT_LANGUAGE_CODES = {}
 ALT_LANGUAGE_CODES["zh-CN"] = "zh"
 ALT_LANGUAGE_CODES["iw"] = "he"
+ALT_LANGUAGE_CODES["tl"] = "fil"
 
 local Translator = {
     trans_servers = {
@@ -225,7 +346,7 @@ end
 function Translator:genSettingsMenu()
     local function genLanguagesItems(setting_name, default_checked_item)
         local items_table = {}
-        for lang_key, lang_name in ffiutil.orderedPairs(SUPPORTED_LANGUAGES) do
+        for lang_key, lang_name in ffiUtil.orderedPairs(SUPPORTED_LANGUAGES) do
             table.insert(items_table, {
                 text_func = function()
                     return T("%1 (%2)", lang_name, lang_key)
@@ -233,6 +354,7 @@ function Translator:genSettingsMenu()
                 checked_func = function()
                     return lang_key == (G_reader_settings:readSetting(setting_name) or default_checked_item)
                 end,
+                radio = true,
                 callback = function()
                     G_reader_settings:saveSetting(setting_name, lang_key)
                 end,
@@ -275,6 +397,16 @@ This is useful:
                 end,
                 callback = function()
                     G_reader_settings:flipNilOrTrue("translator_from_auto_detect")
+                end,
+            },
+            {
+                text = _("Show romanizations"),
+                help_text = _("Displays source language text in Latin characters. This is useful for reading languages with non-Latin scripts."),
+                checked_func = function()
+                    return G_reader_settings:isTrue("translator_with_romanizations")
+                end,
+                callback = function()
+                    G_reader_settings:flipTrue("translator_with_romanizations")
                 end,
             },
             {
@@ -377,6 +509,7 @@ function Translator:loadPage(text, target_lang, source_lang)
     local query = ""
     self.trans_params.tl = target_lang
     self.trans_params.sl = source_lang
+
     for k,v in pairs(self.trans_params) do
         if type(v) == "table" then
             for _, v2 in ipairs(v) do
@@ -385,6 +518,9 @@ function Translator:loadPage(text, target_lang, source_lang)
         else
             query = query .. k .. '=' .. v .. '&'
         end
+    end
+    if G_reader_settings:isTrue("translator_with_romanizations") then
+       query = query .. "dt=rm&"
     end
     local parsed = url.parse(self:getTransServer())
     parsed.path = self.trans_path
@@ -560,10 +696,14 @@ function Translator:_showTranslation(text, detailed_view, source_lang, target_la
         -- for easier quick reading
         local source = {}
         local translated = {}
+        local romanized = {}
         for i, r in ipairs(result[1]) do
             if detailed_view then
                 local s = type(r[2]) == "string" and r[2] or ""
                 table.insert(source, s)
+                if type(r[4]) == "string" then
+                    table.insert(romanized, r[4])
+                end
             end
             local t = type(r[1]) == "string" and r[1] or ""
             table.insert(translated, t)
@@ -572,6 +712,9 @@ function Translator:_showTranslation(text, detailed_view, source_lang, target_la
         if detailed_view then
             text_main = "● " .. text_main
             table.insert(output, "▣ " .. table.concat(source, " "))
+            if #romanized > 0 then
+                table.insert(output, table.concat(romanized, " "))
+            end
         end
         table.insert(output, text_main)
     end
@@ -628,7 +771,7 @@ function Translator:_showTranslation(text, detailed_view, source_lang, target_la
                             UIManager:close(ui.highlight.highlight_dialog)
                             ui.highlight.highlight_dialog = nil
                             if index then
-                                ui.highlight:editHighlight(index, false, text_main)
+                                ui.highlight:editNote(index, false, text_main)
                             else
                                 ui.highlight:addNote(text_main)
                             end
@@ -641,7 +784,7 @@ function Translator:_showTranslation(text, detailed_view, source_lang, target_la
                             UIManager:close(ui.highlight.highlight_dialog)
                             ui.highlight.highlight_dialog = nil
                             if index then
-                                ui.highlight:editHighlight(index, false, text_all)
+                                ui.highlight:editNote(index, false, text_all)
                             else
                                 ui.highlight:addNote(text_all)
                             end

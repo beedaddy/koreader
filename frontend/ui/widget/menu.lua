@@ -4,8 +4,6 @@ local BottomContainer = require("ui/widget/container/bottomcontainer")
 local Button = require("ui/widget/button")
 local CenterContainer = require("ui/widget/container/centercontainer")
 local Device = require("device")
-local Event = require("ui/event")
-local FFIUtil = require("ffi/util")
 local FocusManager = require("ui/widget/focusmanager")
 local Font = require("ui/font")
 local FrameContainer = require("ui/widget/container/framecontainer")
@@ -28,12 +26,13 @@ local Utf8Proc = require("ffi/utf8proc")
 local VerticalGroup = require("ui/widget/verticalgroup")
 local VerticalSpan = require("ui/widget/verticalspan")
 local WidgetContainer = require("ui/widget/container/widgetcontainer")
+local ffiUtil = require("ffi/util")
 local logger = require("logger")
 local util = require("util")
 local _ = require("gettext")
 local Input = Device.input
 local Screen = Device.screen
-local T = FFIUtil.template
+local T = ffiUtil.template
 
 --[[--
 Widget that displays a shortcut icon for menu item.
@@ -91,6 +90,7 @@ local MenuItem = InputContainer:extend{
     infont = "infont",
     linesize = Size.line.medium,
     single_line = false,
+    multilines_forced = false, -- set to true to always use TextBoxWidget
     multilines_show_more_text = false,
     -- Align text & mandatory baselines (only when single_line=true)
     align_baselines = false,
@@ -139,7 +139,8 @@ function MenuItem:init()
     if self.infont_size > max_font_size then
         self.infont_size = max_font_size
     end
-    if not self.single_line and not self.multilines_show_more_text and not self.items_max_lines then
+    if not self.single_line and not self.multilines_forced
+            and not self.multilines_show_more_text and not self.items_max_lines then
         -- For non single line menus (File browser, Bookmarks), if the
         -- user provided font size is large and would not allow showing
         -- more than one line in our item height, just switch to single
@@ -432,11 +433,7 @@ function MenuItem:init()
         HorizontalSpan:new{ width = self.items_padding or Size.padding.fullscreen },
     }
     if self.shortcut then
-        table.insert(hgroup, ItemShortCutIcon:new{
-            dimen = shortcut_icon_dimen,
-            key = self.shortcut,
-            style = self.shortcut_style,
-        })
+        table.insert(hgroup, self.menu:getItemShortCutIcon(shortcut_icon_dimen, self.shortcut, self.shortcut_style))
         table.insert(hgroup, HorizontalSpan:new{ width = Size.span.horizontal_default })
     end
     table.insert(hgroup, self._underline_container)
@@ -475,25 +472,19 @@ function MenuItem:getDotsText(face)
     return _dots_cached_info.text, _dots_cached_info.min_width
 end
 
-function MenuItem:onFocus(initial_focus)
-    if Device:isTouchDevice() then
-        -- Devices which are Keys capable will get this onFocus called by
-        -- updateItems(), which will toggle the underline color of first item.
-        -- If the device is also Touch capable, let's not show the initial
-        -- underline for a prettier display (it will be shown only when keys
-        -- are used).
-        if not initial_focus or self.menu.did_focus_with_keys then
-            self._underline_container.color = Blitbuffer.COLOR_BLACK
-            self.menu.did_focus_with_keys = true
-        end
-    else
-        self._underline_container.color = Blitbuffer.COLOR_BLACK
-    end
+function MenuItem:onFocus()
+    self._underline_container.color = Blitbuffer.COLOR_BLACK
+    -- NOTE: Medium is really, really, really thin; so we'd ideally swap to something thicker...
+    --       Unfortunately, this affects vertical text positioning,
+    --       leading to an unsightly refresh of the item :/.
+    --self._underline_container.linesize = Size.line.thick
     return true
 end
 
 function MenuItem:onUnfocus()
     self._underline_container.color = self.line_color
+    -- See above for reasoning.
+    --self._underline_container.linesize = self.linesize
     return true
 end
 
@@ -580,13 +571,13 @@ local Menu = FocusManager:extend{
 
     no_title = false,
     title = "",
+    custom_title_bar = nil,
     subtitle = nil,
     show_path = nil, -- path in titlebar subtitle
     -- default width and height
     width = nil,
     -- height will be calculated according to item number if not given
     height = nil,
-    header_padding = Size.padding.default,
     dimen = nil,
     item_table = nil, -- NOT mandatory (will be empty)
     item_table_stack = nil,
@@ -610,7 +601,7 @@ local Menu = FocusManager:extend{
     items_font_size = nil,
     items_mandatory_font_size = nil,
     multilines_show_more_text = nil,
-        -- Global settings or default values will be used if not provided
+    -- Global settings or default values will be used if not provided
     -- Setting this to a number enables flexible height of items
     -- and sets the maximum number of lines in an item, longer items are truncated
     items_max_lines = nil,
@@ -620,7 +611,7 @@ local Menu = FocusManager:extend{
     -- if you want to embed the menu widget into another widget, set
     -- this to false
     is_popout = true,
-    title_bar_fm_style = nil, -- set to true to build increased title bar like in FileManager
+    title_bar_fm_style = nil, -- set to true to mimic FileManager's custom title bar (extra padding & subtitle)
     -- set icon to add title bar left button
     title_bar_left_icon = nil,
     -- close_callback is a function, which is executed when menu is closed
@@ -629,6 +620,14 @@ local Menu = FocusManager:extend{
     linesize = Size.line.medium,
     line_color = Blitbuffer.COLOR_DARK_GRAY,
 }
+
+function Menu:getItemShortCutIcon(dimen, key, style)
+    return ItemShortCutIcon:new{
+        dimen = dimen,
+        key = key,
+        style = style,
+    }
+end
 
 function Menu:_recalculateDimen(no_recalculate_dimen)
     local perpage = self.items_per_page or G_reader_settings:readSetting("items_per_page") or self.items_per_page_default
@@ -644,14 +643,12 @@ function Menu:_recalculateDimen(no_recalculate_dimen)
     local top_height = 0
     if self.title_bar and not self.no_title then
         top_height = self.title_bar:getHeight()
-        if not self.title_bar_fm_style then
-            top_height = top_height + self.header_padding
-        end
     end
     local bottom_height = 0
     if self.page_return_arrow and self.page_info_text then
+        -- The extra padding is for UX reasons only, to leave a bit of space above the footer.
         bottom_height = math.max(self.page_return_arrow:getSize().h, self.page_info_text:getSize().h)
-            + 2 * Size.padding.button
+                      + Size.padding.button
     end
     self.available_height = self.inner_dimen.h - top_height - bottom_height
     self.item_dimen = Geom:new{
@@ -698,7 +695,7 @@ function Menu:init()
         if self.subtitle == nil and (self.show_path or self.title_bar_fm_style) then
             self.subtitle = ""
         end
-        self.title_bar = TitleBar:new{
+        self.title_bar = self.custom_title_bar or TitleBar:new{
             width = self.dimen.w,
             fullscreen = "true",
             align = "center",
@@ -767,8 +764,34 @@ function Menu:init()
     self.page_info_first_chev:hide()
     self.page_info_last_chev:hide()
 
-    local title_goto, type_goto, hint_func
     local buttons = {
+        {
+            {
+                text = self.search_callback and _("Search…") or _("Search"),
+                callback = function()
+                    local search_string = self.page_info_text.input_dialog:getInputText()
+                    if self.search_callback then
+                        self.search_callback(search_string)
+                        self.page_info_text:closeInputDialog()
+                    else
+                        if search_string ~= "" then
+                            self:goToMenuItemMatching(search_string)
+                            self.page_info_text:closeInputDialog()
+                        end
+                    end
+                end,
+            },
+            {
+                text = _("Go to letter"),
+                callback = function()
+                    local search_string = self.page_info_text.input_dialog:getInputText()
+                    if search_string ~= "" then
+                        self:goToMenuItemMatching(search_string, true)
+                        self.page_info_text:closeInputDialog()
+                    end
+                end,
+            },
+        },
         {
             {
                 text = _("Cancel"),
@@ -779,7 +802,6 @@ function Menu:init()
             },
             {
                 text = _("Go to page"),
-                is_enter_default = not self.goto_letter,
                 callback = function()
                     local page = tonumber(self.page_info_text.input_dialog:getInputText())
                     if page and page >= 1 and page <= self.page_num then
@@ -790,59 +812,19 @@ function Menu:init()
             },
         },
     }
-
-    if self.goto_letter then
-        title_goto = _("Enter letter or page number")
-        hint_func = function()
-            -- @translators First group is the standard range for alphabetic searches, second group is a page number range
-            return T(_("(a - z) or (1 - %1)"), self.page_num)
-        end
-        table.insert(buttons, 1, {
-            {
-                text = _("File search"),
-                callback = function()
-                    self.page_info_text:closeInputDialog()
-                    UIManager:sendEvent(Event:new("ShowFileSearch", self.page_info_text.input_dialog:getInputText()))
-                end,
-            },
-            {
-                text = _("Go to letter"),
-                is_enter_default = true,
-                callback = function()
-                    local search_string = self.page_info_text.input_dialog:getInputText()
-                    if search_string == "" then return end
-                    search_string = Utf8Proc.lowercase(util.fixUtf8(search_string, "?"))
-                    for k, v in ipairs(self.item_table) do
-                        local filename = Utf8Proc.lowercase(util.fixUtf8(FFIUtil.basename(v.path), "?"))
-                        local i = filename:find(search_string)
-                        if i == 1 and not v.is_go_up then
-                            self:onGotoPage(self:getPageNumber(k))
-                            break
-                        end
-                    end
-                    self.page_info_text:closeInputDialog()
-                end,
-            },
-        })
-    else
-        title_goto = _("Enter page number")
-        type_goto = "number"
-        hint_func = function()
-            return string.format("(1 - %s)", self.page_num)
-        end
-    end
-
     self.page_info_text = self.page_info_text or Button:new{
         text = "",
+        text_font_bold = false,
+        bordersize = 0,
+        call_hold_input_on_tap = true,
         hold_input = {
-            title = title_goto,
-            input_type = type_goto,
-            hint_func = hint_func,
+            title = _("Enter text, letter or page number"),
+            hint_func = function()
+                -- @translators First group is the standard range for alphabetic searches, second group is a page number range
+                return T(_("(a - z) or (1 - %1)"), self.page_num)
+            end,
             buttons = buttons,
         },
-        call_hold_input_on_tap = true,
-        bordersize = 0,
-        text_font_bold = false,
     }
     self.page_info = HorizontalGroup:new{
         self.page_info_first_chev,
@@ -938,7 +920,7 @@ function Menu:init()
         }
     end
     -- delegate swipe gesture to GestureManager in filemanager
-    if not self.filemanager then
+    if self.name ~= "filemanager" then
         self.ges_events.Swipe = {
             GestureRange:new{
                 ges = "swipe",
@@ -1003,9 +985,25 @@ end
 
 function Menu:updatePageInfo(select_number)
     if #self.item_table > 0 then
-        if Device:hasDPad() then
-            -- reset focus manager accordingly
-            self:moveFocusTo(1, select_number)
+        local is_focused = self.itemnumber and self.itemnumber > 0
+        if is_focused or Device:hasDPad() then
+            self.prev_itemnumber = self.itemnumber -- for CoverBrowser
+            self.itemnumber = nil -- focus only once
+            select_number = select_number or 1 -- default to select the first item
+            local x, y
+            local nb_cols = self.layout[1] and #self.layout[1] or 1
+            if nb_cols == 1 then
+                x = 1
+                y = select_number
+            else -- mosaic
+                x = select_number % nb_cols
+                x = x ~= 0 and x or nb_cols
+                y = (select_number - x) / nb_cols + 1
+            end
+            -- Reset focus manager accordingly.
+            -- NOTE: Since this runs automatically on init,
+            --       we use FOCUS_ONLY_ON_NT as we don't want to see the initial underline on Touch devices.
+            self:moveFocusTo(x, y, is_focused and FocusManager.FORCED_FOCUS or FocusManager.FOCUS_ONLY_ON_NT)
         end
         -- update page information
         self.page_info_text:setText(T(_("Page %1 of %2"), self.page, self.page_num))
@@ -1046,10 +1044,6 @@ function Menu:updateItems(select_number, no_recalculate_dimen)
     self.return_button:resetLayout()
     self.content_group:resetLayout()
     self:_recalculateDimen(no_recalculate_dimen)
-    -- default to select the first item
-    if not select_number then
-        select_number = 1
-    end
 
     local items_nb -- number of items in the visible page
     local idx_offset, multilines_show_more_text
@@ -1069,6 +1063,9 @@ function Menu:updateItems(select_number, no_recalculate_dimen)
         local item = self.item_table[index]
         if item == nil then break end
         item.idx = index -- index is valid only for items that have been displayed
+        if index == self.itemnumber then -- focused item
+            select_number = idx
+        end
         local item_shortcut, shortcut_style
         if self.is_enable_shortcut then
             item_shortcut = self.item_shortcuts[idx]
@@ -1100,6 +1097,7 @@ function Menu:updateItems(select_number, no_recalculate_dimen)
             menu = self,
             linesize = self.linesize,
             single_line = self.single_line,
+            multilines_forced = self.multilines_forced,
             multilines_show_more_text = multilines_show_more_text,
             items_max_lines = self.items_max_lines,
             truncate_left = self.truncate_left,
@@ -1127,29 +1125,25 @@ end
 
 -- merge TitleBar layout into self FocusManager layout
 function Menu:mergeTitleBarIntoLayout()
+    if not self.title_bar then return end
     if Device:hasSymKey() or Device:hasScreenKB() then
         -- Title bar items can be accessed through key mappings on kindle
         return
     end
-    local menu_item_layout_start_row = 1
-    local titlebars = {self.title_bar, self.outer_title_bar}
-    for _, v in ipairs(titlebars) do
-        -- Menu uses the right key to trigger the context menu: we can't use it to move focus in horizontal directions.
-        -- So, add title bar buttons to FocusManager's layout in a vertical-only layout
-        local title_bar_layout = v:generateVerticalLayout()
-        for _, row in ipairs(title_bar_layout) do
-            table.insert(self.layout, menu_item_layout_start_row, row)
-            menu_item_layout_start_row = menu_item_layout_start_row + 1
-        end
+    -- On hasFewKeys devices, Menu uses the "Right" key to trigger the context menu: we can't use it to move focus in horizontal directions.
+    -- So, add title bar buttons to FocusManager's layout in a vertical-only layout
+    local title_bar_layout = self.title_bar:generateVerticalLayout()
+    for i, row in ipairs(title_bar_layout) do
+        -- Insert the title bar in the top rows of our layout
+        table.insert(self.layout, i, row)
     end
-    if menu_item_layout_start_row > #self.layout then -- no menu items
-        menu_item_layout_start_row = #self.layout -- avoid index overflow
-    end
-    self:moveFocusTo(1, menu_item_layout_start_row) -- move focus to first menu item if any, keep original behavior
+    -- Adjust for the added rows to keep our current selection
+    self.selected.y = self.selected.y + #title_bar_layout
+    logger.dbg("Menu:mergeTitleBarIntoLayout: Adjusted focus position to account for added titlebar rows:", self.selected.x, ",", self.selected.y)
 end
 
 --[[
-    the itemnumber paramter determines menu page number after switching item table
+    the itemnumber parameter determines menu page number after switching item table
     1. itemnumber >= 0
         the page number is calculated with items per page
     2. itemnumber == nil
@@ -1195,7 +1189,12 @@ function Menu:switchItemTable(new_title, new_item_table, itemnumber, itemmatch, 
     if itemnumber == nil then
         self.page = 1
     elseif itemnumber >= 0 then
+        itemnumber = math.min(itemnumber, #self.item_table)
         self.page = self:getPageNumber(itemnumber)
+        -- Draw the focus in FileChooser when it has focused_path (i.e. itemmatch), except ".." item
+        if self.path ~= nil and type(itemmatch) == "table" and not self.item_table[itemnumber].is_go_up then
+            self.itemnumber = itemnumber
+        end
     end
 
     self:updateItems(1, no_recalculate_dimen)
@@ -1278,6 +1277,20 @@ function Menu:onScreenResize(dimen)
     return false
 end
 
+function Menu:onSetRotationMode(rotation)
+    if self._recreate_func and rotation ~= nil and rotation ~= Screen:getRotationMode() then
+        UIManager:close(self)
+        -- Also re-layout ReaderView or FileManager itself
+        if self._manager.ui.view then
+            self._manager.ui.view:onSetRotationMode(rotation)
+        else
+            self._manager.ui:onSetRotationMode(rotation)
+        end
+        self._recreate_func()
+        return true
+    end
+end
+
 function Menu:onSelectByShortCut(_, keyevent)
     for k,v in ipairs(self.item_shortcuts) do
         if k > self.perpage then
@@ -1290,6 +1303,21 @@ function Menu:onSelectByShortCut(_, keyevent)
         end
     end
     return true
+end
+
+function Menu:goToMenuItemMatching(search_string, goto_letter)
+    search_string = Utf8Proc.lowercase(util.fixUtf8(search_string, "?"))
+    for i, item in ipairs(self.item_table) do
+        if not item.is_go_up then
+            local item_text = Utf8Proc.lowercase(util.fixUtf8(item.text, "?"))
+            local idx = item_text:find(search_string)
+            if idx and (idx == 1 or not goto_letter) then
+                self.itemnumber = i -- draw focus
+                self:onGotoPage(self:getPageNumber(i))
+                break
+            end
+        end
+    end
 end
 
 function Menu:onShowGotoDialog()
@@ -1362,6 +1390,7 @@ function Menu:onLastPage()
 end
 
 function Menu:onGotoPage(page)
+    self.prev_itemnumber = nil
     self.page = page
     self:updateItems(1, true)
     return true
@@ -1473,10 +1502,10 @@ function Menu:setTitleBarLeftIcon(icon)
     self.title_bar:setLeftIcon(icon)
 end
 
-function Menu:onLeftButtonTap() -- to be overriden and implemented by the caller
+function Menu:onLeftButtonTap() -- to be overridden and implemented by the caller
 end
 
-function Menu:onLeftButtonHold() -- to be overriden and implemented by the caller
+function Menu:onLeftButtonHold() -- to be overridden and implemented by the caller
 end
 
 function Menu:getFirstVisibleItemIndex()
@@ -1530,7 +1559,7 @@ end
 
 function Menu.itemTableFromTouchMenu(t)
     local item_t = {}
-    for k, v in FFIUtil.orderedPairs(t) do
+    for k, v in ffiUtil.orderedPairs(t) do
         local item = { text = k }
         if v.callback then
             item.callback = v.callback

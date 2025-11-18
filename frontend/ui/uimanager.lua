@@ -74,13 +74,13 @@ function UIManager:init()
         end,
     }
     self.poweroff_action = function()
-        self._entered_poweroff_stage = true
-        logger.info("Powering off the device...")
-        self:broadcastEvent(Event:new("PowerOff"))
-        self:broadcastEvent(Event:new("Close"))
         local Screensaver = require("ui/screensaver")
         Screensaver:setup("poweroff", _("Powered off"))
         Screensaver:show()
+        self._entered_poweroff_stage = true
+        logger.info("Powering off the device...")
+        self:broadcastEvent(Event:new("PowerOff"))
+        self:broadcastEvent(Event:new("Close", { keep_screensaver = true }))
         self:nextTick(function()
             Device:saveSettings()
             Device:powerOff()
@@ -92,13 +92,13 @@ function UIManager:init()
         end)
     end
     self.reboot_action = function()
-        self._entered_poweroff_stage = true
-        logger.info("Rebooting the device...")
-        self:broadcastEvent(Event:new("Reboot"))
-        self:broadcastEvent(Event:new("Close"))
         local Screensaver = require("ui/screensaver")
         Screensaver:setup("reboot", _("Rebooting…"))
         Screensaver:show()
+        self._entered_poweroff_stage = true
+        logger.info("Rebooting the device...")
+        self:broadcastEvent(Event:new("Reboot"))
+        self:broadcastEvent(Event:new("Close", { keep_screensaver = true }))
         self:nextTick(function()
             Device:saveSettings()
             Device:reboot()
@@ -122,6 +122,14 @@ end
 function UIManager:setIgnoreTouchInput(state)
     local InputContainer = require("ui/widget/container/inputcontainer")
     InputContainer:setIgnoreTouchInput(state)
+end
+
+function UIManager:setSilentMode(toggle)
+    self.silent_mode = toggle or nil
+end
+
+function UIManager:isInSilentMode()
+    return self.silent_mode or false
 end
 
 --[[--
@@ -148,6 +156,10 @@ If refreshtype is omitted, no refresh will be enqueued at this time.
 function UIManager:show(widget, refreshtype, refreshregion, x, y, refreshdither)
     if not widget then
         logger.dbg("attempted to show a nil widget")
+        return
+    end
+    if self.silent_mode and widget.honor_silent_mode then
+        logger.dbg("widget show disabled:", widget.id or widget.name or tostring(widget))
         return
     end
     logger.dbg("show widget:", widget.id or widget.name or tostring(widget))
@@ -681,21 +693,6 @@ dbg:guard(UIManager, 'setDirty',
     end)
 --]]
 
---[[--
-Clear the full repaint & refresh queues.
-
-NOTE: Beware! This doesn't take any prisonners!
-You shouldn't have to resort to this unless in very specific circumstances!
-plugins/coverbrowser.koplugin/covermenu.lua building a franken-menu out of buttondialogtitle & buttondialog
-and wanting to avoid inheriting their original paint/refresh cycle being a prime example.
---]]
-function UIManager:clearRenderStack()
-    logger.dbg("clearRenderStack: Clearing the full render stack!")
-    self._dirty = {}
-    self._refresh_func_stack = {}
-    self._refresh_stack = {}
-end
-
 function UIManager:insertZMQ(zeromq)
     table.insert(self._zeromqs, zeromq)
     return zeromq
@@ -767,7 +764,7 @@ end
 
 --- Top-to-bottom widgets iterator
 --- NOTE: VirtualKeyboard can be instantiated multiple times, and is a modal,
---        so don't be suprised if you find a couple of instances of it at the top ;).
+--        so don't be surprised if you find a couple of instances of it at the top ;).
 function UIManager:topdown_widgets_iter()
     local n = #self._window_stack
     local i = n + 1
@@ -1149,7 +1146,7 @@ function UIManager:_refresh(mode, region, dither)
     end
     -- special case: "partial" refreshes
     -- will get promoted every self.FULL_REFRESH_COUNT refreshes
-    -- since _refresh can be called mutiple times via setDirty called in
+    -- since _refresh can be called multiple times via setDirty called in
     -- different widgets before a real screen repaint, we should make sure
     -- refresh_count is incremented by only once at most for each repaint
     -- NOTE: Ideally, we'd only check for "partial"" w/ no region set (that neatly narrows it down to just the reader).
@@ -1671,7 +1668,7 @@ function UIManager:_standbyTransition()
 end
 
 -- Used by a PM transition event handler to request an early return from input polling.
--- NOTE: We can't re-use setInputTimeout to avoid interactions with ZMQ...
+-- NOTE: We can't reuse setInputTimeout to avoid interactions with ZMQ...
 function UIManager:consumeInputEarlyAfterPM(toggle)
     self._pm_consume_input_early = toggle
 end

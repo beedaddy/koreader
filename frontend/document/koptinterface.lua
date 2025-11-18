@@ -16,6 +16,7 @@ local TileCacheItem = require("document/tilecacheitem")
 local Utf8Proc = require("ffi/utf8proc")
 local logger = require("logger")
 local util = require("util")
+local ffi = require("ffi")
 
 local KoptInterface = {
     ocrengine = "ocrengine",
@@ -24,7 +25,7 @@ local KoptInterface = {
     -- in `$TESSDATA_PREFIX/` on more recent versions).
     tessocr_data = not os.getenv('TESSDATA_PREFIX') and DataStorage:getDataDir().."/data/tessdata" or nil,
     ocr_lang = "eng",
-    ocr_type = 3, -- default 0, for more accuracy use 3
+    ocr_type = -1, -- default: assume a single uniform block of text.
     last_context_size = nil,
     default_context_size = 1024*1024,
 }
@@ -263,6 +264,60 @@ function KoptInterface:getSemiAutoBBox(doc, pageno)
     end
 end
 
+-- lazily load libpthread
+local cached_pthread
+local function get_pthread()
+    if cached_pthread then
+        return cached_pthread
+    end
+    local candidates, ok
+    if ffi.os == "Windows" then
+        candidates = {"libwinpthread-1.dll"}
+    elseif FFIUtil.isAndroid() then
+        -- pthread directives are in Bionic library on Android
+        candidates = {"libc.so"}
+    else
+        -- Kobo devices strangely have no libpthread.so in LD_LIBRARY_PATH
+        -- so we hardcode the libpthread.so.0 here just for Kobo.
+        candidates = {"pthread", "libpthread.so.0"}
+    end
+    for _, libname in ipairs(candidates) do
+        ok, cached_pthread = pcall(ffi.load, libname)
+        if ok then
+            require("ffi/pthread_h")
+            return cached_pthread
+        end
+    end
+end
+
+function KoptInterface:reflowPage(doc, pageno, bbox, background)
+    logger.dbg("reflowing page", pageno, background and "in background" or "in foreground")
+    local kc = self:createContext(doc, pageno, bbox)
+    if background then
+        kc:setPreCache()
+        self.bg_thread = true
+    end
+    -- Calculate zoom.
+    kc.zoom = (1.5 * kc.zoom * kc.quality * kc.dev_width) / bbox.x1
+    -- Generate pixmap.
+    local page = doc._document:openPage(pageno)
+    page:getPagePix(kc, doc.render_mode)
+    page:close()
+    -- Reflow.
+    if background then
+        local pthread = get_pthread()
+        local rf_thread = ffi.new("pthread_t[1]")
+        local attr = ffi.new("pthread_attr_t[1]")
+        pthread.pthread_attr_init(attr)
+        pthread.pthread_attr_setdetachstate(attr, pthread.PTHREAD_CREATE_DETACHED)
+        pthread.pthread_create(rf_thread, attr, KOPTContext.k2pdfopt.k2pdfopt_reflow_bmp, ffi.cast("void*", kc))
+        pthread.pthread_attr_destroy(attr)
+    else
+        KOPTContext.k2pdfopt.k2pdfopt_reflow_bmp(kc)
+    end
+    return kc
+end
+
 --[[--
 Get cached koptcontext for a certain page.
 
@@ -277,13 +332,9 @@ function KoptInterface:getCachedContext(doc, pageno)
     local cached = DocCache:check(hash, ContextCacheItem)
     if not cached then
         -- If kctx is not cached, create one and get reflowed bmp in foreground.
-        local kc = self:createContext(doc, pageno, bbox)
-        local page = doc._document:openPage(pageno)
-        logger.dbg("reflowing page", pageno, "in foreground")
-        -- reflow page
         --local secs, usecs = FFIUtil.gettime()
-        page:reflow(kc, doc.render_mode)
-        page:close()
+        local kc = self:reflowPage(doc, pageno, bbox, false)
+        -- reflow page
         --local nsecs, nusecs = FFIUtil.gettime()
         --local dur = nsecs - secs + (nusecs - usecs) / 1000000
         --self:logReflowDuration(pageno, dur)
@@ -472,20 +523,11 @@ function KoptInterface:hintReflowedPage(doc, pageno, zoom, rotation, gamma, hint
         if hinting then
             CanvasContext:enableCPUCores(2)
         end
-
-        local kc = self:createContext(doc, pageno, bbox)
-        local page = doc._document:openPage(pageno)
-        logger.dbg("hinting page", pageno, "in background")
-        -- reflow will return immediately and running in background thread
-        kc:setPreCache()
-        self.bg_thread = true
-        page:reflow(kc, doc.render_mode)
-        page:close()
+        local kc = self:reflowPage(doc, pageno, bbox, true)
         DocCache:insert(hash, ContextCacheItem:new{
             size = self.last_context_size or self.default_context_size,
             kctx = kc,
         })
-
         -- We'll wait until the background thread is done to go back to a single core, as this returns immediately!
         -- c.f., :waitForContext
     end
@@ -791,7 +833,9 @@ function KoptInterface:getNativeOCRWord(doc, pageno, rect)
             kc.getTOCRWord, kc, "src",
             0, 0, word_w, word_h,
             self.tessocr_data, self.ocr_lang, self.ocr_type, 0, 1)
-        DocCache:insert(hash, CacheItem:new{ ocrword = word, size = #word + 64 }) -- estimation
+        if word then
+            DocCache:insert(hash, CacheItem:new{ ocrword = word, size = #word + 64 }) -- estimation
+        end
         logger.dbg("word", word)
         page:close()
         kc:free()
@@ -941,7 +985,8 @@ function KoptInterface:getTextFromBoxes(boxes, pos0, pos1)
         local prev_word
         local prev_word_end_x
         for j = j0, j1 do
-            local word = boxes[i][j].word
+            local box = boxes[i][j]
+            local word = box and box.word
             if word then
                 if not line_first_word_seen then
                     line_first_word_seen = true
@@ -961,7 +1006,6 @@ function KoptInterface:getTextFromBoxes(boxes, pos0, pos1)
                         end
                     end
                 end
-                local box = boxes[i][j]
                 if prev_word then
                     -- A box should have been made for each word, so assume
                     -- we want a space between them, with some exceptions
@@ -1154,9 +1198,36 @@ function KoptInterface:getSelectedWordContext(word, nb_words, pos)
     local boxes = self.last_text_boxes
     if not pos or not boxes or #boxes == 0 then return end
     local i, j = getWordBoxIndices(boxes, pos)
-    if boxes[i][j].word ~= word then return end
+    local i_end, j_end = i, j
+    local word_array = util.splitToArray(word, " ")
+    for idx, split_word in ipairs(word_array) do
+        local box_word = boxes[i_end][j_end].word
+        if box_word:sub(-1) == "-" and j_end == #boxes[i_end] and box_word ~= split_word then
+            -- Line final hyphenation.
+            -- Combine word with first word of next line.
+            box_word = box_word:sub(1, -2)
+            i_end = i_end + 1
+            j_end = 1
+            box_word = box_word .. boxes[i_end][j_end].word
+        elseif box_word:sub(-2, -1) == "\u{00AD}" and j_end == #boxes[i_end] and box_word ~= split_word then
+            -- Hyphen
+            box_word = box_word:sub(1, -3)
+            i_end = i_end + 1
+            j_end = 1
+            box_word = box_word .. boxes[i_end][j_end].word
+        end
+        if box_word ~= split_word then return end
+        if idx ~= #word_array then
+            if j_end == #boxes[i_end] then
+                i_end = i_end + 1
+                j_end = 1
+            else
+                j_end = j_end + 1
+            end
+        end
+    end
     local prev_text = get_prev_text(boxes, i, j, nb_words)
-    local next_text = get_next_text(boxes, i, j, nb_words)
+    local next_text = get_next_text(boxes, i_end, j_end, nb_words)
     return prev_text, next_text
 end
 
@@ -1364,7 +1435,7 @@ end
 local function get_pattern_list(pattern, case_insensitive)
     -- pattern list of single words
     local plist = {}
-    -- (as in util.splitToWords(), but only splitting on spaces, keeping punctuations)
+    -- (as in util.splitToWords(), but only splitting on spaces, keeping punctuation marks)
     for word in util.gsplit(pattern, "%s+") do
         if util.hasCJKChar(word) then
             for char in util.gsplit(word, "[\192-\255][\128-\191]+", true) do
@@ -1374,12 +1445,16 @@ local function get_pattern_list(pattern, case_insensitive)
             table.insert(plist, case_insensitive and Utf8Proc.lowercase(util.fixUtf8(word, "?")) or word)
         end
     end
+    if #plist == 1 then
+        plist.from_start = pattern:sub(1, 1) == " "
+        plist.from_end = pattern:sub(-1) == " "
+    end
     return plist
 end
 
 local function all_matches(boxes, plist, case_insensitive)
     local pnb = #plist
-    -- return mached word indices from index i, j
+    -- return matched word indices from index i, j
     local function match(i, j)
         local pindex = 1
         local matched_indices = {}
@@ -1395,7 +1470,17 @@ local function all_matches(boxes, plist, case_insensitive)
             local pword = plist[pindex]
             local matched
             if pnb == 1 then -- single word in plist
-                matched = word:find(pword, 1, true)
+                if plist.from_start or plist.from_end then
+                    if plist.from_start and plist.from_end then
+                        matched = word == pword
+                    elseif plist.from_start then
+                        matched = word:sub(1, #pword) == pword
+                    else -- plist.from_end
+                        matched = word:sub(-#pword) == pword
+                    end
+                else
+                    matched = word:find(pword, 1, true)
+                end
             else -- multiple words in plist
                 if pindex == 1 then
                     -- first word of query should match at end of a word from the document

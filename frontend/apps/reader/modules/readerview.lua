@@ -90,11 +90,15 @@ function ReaderView:init()
         bbox = nil,
     }
     self.highlight = {
+        page_boxes = {},  -- hashmap; boxes in pages, used to draw visited pages in "page" view modes
+        visible_boxes = nil, -- array; visible boxes in the current page, used by ReaderHighlight:onTap()
         lighten_factor = G_reader_settings:readSetting("highlight_lighten_factor", 0.2),
         note_mark = G_reader_settings:readSetting("highlight_note_marker"),
         temp_drawer = "invert",
         temp = {},
         saved_drawer = "lighten",
+        -- NOTE: Unfortunately, yellow tends to look like absolute ass on Kaleido panels...
+        saved_color = Screen:isColorEnabled() and "yellow" or "gray",
         indicator = nil, -- geom: non-touch highlight position indicator: {x = 50, y=50}
     }
     self.page_states = {}
@@ -212,7 +216,8 @@ function ReaderView:paintTo(bb, x, y)
     -- mark last read area of overlapped pages
     if not self.dim_area:isEmpty() and self:isOverlapAllowed() then
         if self.page_overlap_style == "dim" then
-            bb:dimRect(self.dim_area.x, self.dim_area.y, self.dim_area.w, self.dim_area.h)
+            -- NOTE: "dim", as in make black text fainter, e.g., lighten the rect
+            bb:lightenRect(self.dim_area.x, self.dim_area.y, self.dim_area.w, self.dim_area.h)
         else
             -- Paint at the proper y origin depending on whether we paged forward (dim_area.y == 0) or backward
             local paint_y = self.dim_area.y == 0 and self.dim_area.h or self.dim_area.y
@@ -229,9 +234,10 @@ function ReaderView:paintTo(bb, x, y)
         end
     end
 
-    -- draw saved highlight
+    -- draw saved highlight (will return true if any of them are in color)
+    local colorful
     if self.highlight_visible then
-        self:drawSavedHighlight(bb, x, y)
+        colorful = self:drawSavedHighlight(bb, x, y)
     end
     -- draw temporary highlight
     if self.highlight.temp then
@@ -258,8 +264,9 @@ function ReaderView:paintTo(bb, x, y)
     -- stop activity indicator
     self.ui:handleEvent(Event:new("StopActivityIndicator"))
 
-    -- Most pages should not require dithering
-    self.dialog.dithered = nil
+    -- Most pages should not require dithering, but the dithering flag is also used to engage Kaleido waveform modes,
+    -- so we'll set the flag to true if any of our drawn highlights were in color.
+    self.dialog.dithered = colorful
     -- For KOpt, let the user choose.
     if self.ui.paging then
         if self.document.hw_dithering then
@@ -526,67 +533,135 @@ function ReaderView:drawTempHighlight(bb, x, y)
 end
 
 function ReaderView:drawSavedHighlight(bb, x, y)
-    if #self.ui.annotation.annotations == 0 then return end
-    if self.ui.paging then
-        self:drawPageSavedHighlight(bb, x, y)
-    else
-        self:drawXPointerSavedHighlight(bb, x, y)
+    self.highlight.visible_boxes = {}
+    if #self.ui.annotation.annotations > 0 then
+        if self.ui.paging then
+            return self:drawPageSavedHighlight(bb, x, y)
+        else
+            return self:drawXPointerSavedHighlight(bb, x, y)
+        end
     end
 end
 
 function ReaderView:drawPageSavedHighlight(bb, x, y)
+    local do_cache = not self.page_scroll and self.document.configurable.text_wrap == 0
+    local colorful
     local pages = self:getCurrentPageList()
     for _, page in ipairs(pages) do
-        local items = self.ui.highlight:getPageSavedHighlights(page)
-        for _, item in ipairs(items) do
-            local boxes = self.document:getPageBoxesFromPositions(page, item.pos0, item.pos1)
-            if boxes then
-                local draw_note_mark = item.note and self.highlight.note_mark
-                for _, box in ipairs(boxes) do
-                    local rect = self:pageToScreenTransform(page, box)
-                    if rect then
-                        self:drawHighlightRect(bb, x, y, rect, item.drawer, draw_note_mark)
-                        if draw_note_mark and self.highlight.note_mark == "sidemark" then
-                            draw_note_mark = false -- side mark in the first line only
+        if self.highlight.page_boxes[page] ~= nil then -- cached
+            for _, box in ipairs(self.highlight.page_boxes[page]) do
+                local rect = self:pageToScreenTransform(page, box.rect)
+                if rect then
+                    table.insert(self.highlight.visible_boxes, box)
+                    self:drawHighlightRect(bb, x, y, rect, box.drawer, box.color, box.draw_mark)
+                    if box.colorful then
+                        colorful = true
+                    end
+                end
+            end
+        else -- not cached
+            if do_cache then
+                self.highlight.page_boxes[page] = {}
+            end
+            local items, idx_offset = self.ui.highlight:getPageSavedHighlights(page)
+            for index, item in ipairs(items) do
+                local boxes = self.document:getPageBoxesFromPositions(page, item.pos0, item.pos1)
+                if boxes then
+                    local drawer = item.drawer
+                    local color = item.color and Blitbuffer.colorFromName(item.color)
+                    if not colorful and color and not Blitbuffer.isColor8(color) then
+                        colorful = true
+                    end
+                    local draw_note_mark = item.note and true or nil
+                    for _, box in ipairs(boxes) do
+                        local rect = self:pageToScreenTransform(page, box)
+                        if rect then
+                            local hl_box = {
+                                index     = item.parent or (index + idx_offset), -- index in annotations
+                                rect      = box,
+                                drawer    = drawer,
+                                color     = color,
+                                draw_mark = draw_note_mark,
+                                colorful  = colorful,
+                            }
+                            if do_cache then
+                                table.insert(self.highlight.page_boxes[page], hl_box)
+                            end
+                            table.insert(self.highlight.visible_boxes, hl_box)
+                            self:drawHighlightRect(bb, x, y, rect, drawer, color, draw_note_mark)
+                            draw_note_mark = draw_note_mark and false -- side mark in the first line only
+                        else
+                            -- some boxes are not displayed in the currently visible part of the page,
+                            -- the page boxes cannot be cached
+                            do_cache = false
+                            self.highlight.page_boxes[page] = nil
                         end
                     end
                 end
             end
         end
     end
+    return colorful
 end
 
 function ReaderView:drawXPointerSavedHighlight(bb, x, y)
-    -- Getting screen boxes is done for each tap on screen (changing pages,
-    -- showing menu...). We might want to cache these boxes per page (and
-    -- clear that cache when page layout change or highlights are added
-    -- or removed).
-    -- Even in page mode, it's safer to use pos and ui.dimen.h
-    -- than pages' xpointers pos, even if ui.dimen.h is a bit
-    -- larger than pages' heights
-    local cur_view_top = self.document:getCurrentPos()
-    local cur_view_bottom
-    if self.view_mode == "page" and self.document:getVisiblePageCount() > 1 then
-        cur_view_bottom = cur_view_top + 2 * self.ui.dimen.h
-    else
-        cur_view_bottom = cur_view_top + self.ui.dimen.h
-    end
-    for _, item in ipairs(self.ui.annotation.annotations) do
-        if item.drawer then
-            -- document:getScreenBoxesFromPositions() is expensive, so we
-            -- first check if this item is on current page
-            local start_pos = self.document:getPosFromXPointer(item.pos0)
-            if start_pos > cur_view_bottom then return end -- this and all next highlights are after the current page
-            local end_pos = self.document:getPosFromXPointer(item.pos1)
-            if end_pos >= cur_view_top then
-                local boxes = self.document:getScreenBoxesFromPositions(item.pos0, item.pos1, true) -- get_segments=true
-                if boxes then
-                    local draw_note_mark = item.note and self.highlight.note_mark
-                    for _, box in ipairs(boxes) do
-                        if box.h ~= 0 then
-                            self:drawHighlightRect(bb, x, y, box, item.drawer, draw_note_mark)
-                            if draw_note_mark and self.highlight.note_mark == "sidemark" then
-                                draw_note_mark = false -- side mark in the first line only
+    local do_cache = self.view_mode == "page"
+    local colorful
+    local page = self.document:getCurrentPage()
+    if self.highlight.page_boxes[page] ~= nil then -- cached
+        for _, box in ipairs(self.highlight.page_boxes[page]) do
+            table.insert(self.highlight.visible_boxes, box)
+            self:drawHighlightRect(bb, x, y, box.rect, box.drawer, box.color, box.draw_mark)
+            if box.colorful then
+                colorful = true
+            end
+        end
+    else -- not cached
+        if do_cache then
+            self.highlight.page_boxes[page] = {}
+        end
+        -- Even in page mode, it's safer to use pos and ui.dimen.h
+        -- than pages' xpointers pos, even if ui.dimen.h is a bit
+        -- larger than pages' heights
+        local cur_view_top = self.document:getCurrentPos()
+        local cur_view_bottom
+        if self.view_mode == "page" and self.document:getVisiblePageCount() > 1 then
+            cur_view_bottom = cur_view_top + 2 * self.ui.dimen.h
+        else
+            cur_view_bottom = cur_view_top + self.ui.dimen.h
+        end
+        for index, item in ipairs(self.ui.annotation.annotations) do
+            if item.drawer then
+                -- document:getScreenBoxesFromPositions() is expensive, so we
+                -- first check if this item is on current page
+                local start_pos = self.document:getPosFromXPointer(item.pos0)
+                if start_pos > cur_view_bottom then break end -- this and all next highlights are after the current page
+                local end_pos = self.document:getPosFromXPointer(item.pos1)
+                if end_pos >= cur_view_top then
+                    local boxes = self.document:getScreenBoxesFromPositions(item.pos0, item.pos1, true) -- get_segments=true
+                    if boxes then
+                        local drawer = item.drawer
+                        local color = item.color and Blitbuffer.colorFromName(item.color)
+                        if not colorful and color and not Blitbuffer.isColor8(color) then
+                            colorful = true
+                        end
+                        local draw_note_mark = item.note and true or nil
+                        for _, box in ipairs(boxes) do
+                            if box.h ~= 0 then
+                                local hl_box = {
+                                    index     = index,
+                                    rect      = box,
+                                    drawer    = drawer,
+                                    color     = color,
+                                    draw_mark = draw_note_mark,
+                                    colorful  = colorful,
+                                }
+                                if do_cache then
+                                    table.insert(self.highlight.page_boxes[page], hl_box)
+                                end
+                                table.insert(self.highlight.visible_boxes, hl_box)
+                                self:drawHighlightRect(bb, x, y, box, drawer, color, draw_note_mark)
+                                draw_note_mark = draw_note_mark and false -- side mark in the first line only
                             end
                         end
                     end
@@ -594,25 +669,63 @@ function ReaderView:drawXPointerSavedHighlight(bb, x, y)
             end
         end
     end
+    return colorful
 end
 
-function ReaderView:drawHighlightRect(bb, _x, _y, rect, drawer, draw_note_mark)
+function ReaderView:drawHighlightRect(bb, _x, _y, rect, drawer, color, draw_note_mark)
     local x, y, w, h = rect.x, rect.y, rect.w, rect.h
+    if drawer == "lighten" or drawer == "invert" then
+        local pct = G_reader_settings:readSetting("highlight_height_pct")
+        if pct ~= nil then
+            h = math.floor(h * pct / 100)
+            y = y + math.ceil((rect.h - h) / 2)
+        end
+    end
     if drawer == "lighten" then
-        bb:lightenRect(x, y, w, h, self.highlight.lighten_factor)
+        if not color then
+            bb:darkenRect(x, y, w, h, self.highlight.lighten_factor)
+        else
+            if bb:getInverse() == 1 then
+                -- MUL doesn't really work on a black background, so, switch to OVER if we're in software nightmode...
+                -- NOTE: If we do *not* invert the color here, it *will* get inverted by the blitter given that the target bb is inverted.
+                --       While not particularly pretty, this (roughly) matches with hardware nightmode, *and* how MuPDF renders highlights...
+                --       But it's *really* not pretty (https://github.com/koreader/koreader/pull/11044#issuecomment-1902886069), so we'll fix it ;p.
+                local c = Blitbuffer.ColorRGB32(color.r, color.g, color.b, 0xFF * self.highlight.lighten_factor):invert()
+                bb:blendRectRGB32(x, y, w, h, c)
+            else
+                bb:multiplyRectRGB(x, y, w, h, color)
+            end
+        end
     elseif drawer == "underscore" then
-        bb:paintRect(x, y + h - 1, w, Size.line.thick, Blitbuffer.COLOR_GRAY_4)
+        if not color then
+            color = Blitbuffer.COLOR_GRAY_4
+        end
+        if Blitbuffer.isColor8(color) then
+            bb:paintRect(x, y + h - 1, w, Size.line.thick, color)
+        else
+            bb:paintRectRGB32(x, y + h - 1, w, Size.line.thick, color)
+        end
     elseif drawer == "strikeout" then
+        if not color then
+            color = Blitbuffer.COLOR_BLACK
+        end
         local line_y = y + math.floor(h / 2) + 1
         if self.ui.paging then
             line_y = line_y + 2
         end
-        bb:paintRect(x, line_y, w, Size.line.medium, Blitbuffer.COLOR_BLACK)
+        if Blitbuffer.isColor8(color) then
+            bb:paintRect(x, line_y, w, Size.line.medium, color)
+        else
+            bb:paintRectRGB32(x, line_y, w, Size.line.medium, color)
+        end
     elseif drawer == "invert" then
         bb:invertRect(x, y, w, h)
     end
-    if draw_note_mark then
+    if self.highlight.note_mark ~= nil and draw_note_mark ~= nil then
+        color = color or Blitbuffer.COLOR_BLACK
         if self.highlight.note_mark == "underline" then
+            -- With most annotation styles, we'd risk making this invisible if we used the same color,
+            -- so, always draw this in black.
             bb:paintRect(x, y + h - 1, w, Size.line.medium, Blitbuffer.COLOR_BLACK)
         else
             local note_mark_pos_x
@@ -624,9 +737,15 @@ function ReaderView:drawHighlightRect(bb, _x, _y, rect, drawer, draw_note_mark)
                 note_mark_pos_x = self.note_mark_pos_x2
             end
             if self.highlight.note_mark == "sideline" then
-                bb:paintRect(note_mark_pos_x, y, self.note_mark_line_w, h, Blitbuffer.COLOR_BLACK)
+                if Blitbuffer.isColor8(color) then
+                    bb:paintRect(note_mark_pos_x, y, self.note_mark_line_w, rect.h, color)
+                else
+                    bb:paintRectRGB32(note_mark_pos_x, y, self.note_mark_line_w, rect.h, color)
+                end
             elseif self.highlight.note_mark == "sidemark" then
-                self.note_mark_sign:paintTo(bb, note_mark_pos_x, y)
+                if draw_note_mark then
+                    self.note_mark_sign:paintTo(bb, note_mark_pos_x, y)
+                end
             end
         end
     end
@@ -783,13 +902,15 @@ function ReaderView:restoreViewContext(ctx)
     return false
 end
 
-function ReaderView:onSetRotationMode(rotation)
-    if rotation ~= nil then
-        local old_rotation = Screen:getRotationMode()
-        if rotation == old_rotation then
-            return
-        end
+function ReaderView:onSetRotationMode(mode)
+    local old_mode = Screen:getRotationMode()
+    if mode ~= nil and mode ~= old_mode then
+        Screen:setRotationMode(mode)
+        self:rotate(mode, old_mode)
+    end
+end
 
+function ReaderView:rotate(mode, old_mode)
         -- NOTE: We cannot rely on getScreenMode, as it actually checks the screen dimensions, instead of the rotation mode.
         --       (i.e., it returns how the screen *looks* like, not how it's oriented relative to its native layout).
         --       This would horribly break if you started in Portrait (both rotation and visually),
@@ -797,26 +918,18 @@ function ReaderView:onSetRotationMode(rotation)
         --       If you then attempted to switch to a Landscape *rotation*, it would mistakenly think the layout hadn't changed!
         --       So, instead, as we're concerned with *rotation* layouts, just compare the two.
         --       We use LinuxFB-style constants, so, Portraits are even, Landscapes are odds, making this trivial.
-        local matching_orientation = bit.band(rotation, 1) == bit.band(old_rotation, 1)
-
-        if rotation ~= old_rotation and matching_orientation then
-            -- No layout change, just rotate & repaint with a flash
-            Screen:setRotationMode(rotation)
-            UIManager:setDirty(self.dialog, "full")
-            Notification:notify(T(_("Rotation mode set to: %1"), optionsutil:getOptionText("SetRotationMode", rotation)))
-            return
-        end
-
-        Screen:setRotationMode(rotation)
+    local matching_orientation = bit.band(mode, 1) == bit.band(old_mode, 1)
+    if matching_orientation then
+        -- No layout change, just rotate & repaint with a flash
+        UIManager:setDirty(self.dialog, "full")
+    else
+        UIManager:setDirty(nil, "full") -- SetDimensions will only request a partial, we want a flash
+        local new_screen_size = Screen:getSize()
+        self.ui:handleEvent(Event:new("SetDimensions", new_screen_size))
+        self.ui:onScreenResize(new_screen_size)
+        self.ui:handleEvent(Event:new("InitScrollPageStates"))
     end
-
-    UIManager:setDirty(nil, "full") -- SetDimensions will only request a partial, we want a flash
-    local new_screen_size = Screen:getSize()
-    self.ui:handleEvent(Event:new("SetDimensions", new_screen_size))
-    self.ui:onScreenResize(new_screen_size)
-    self.ui:handleEvent(Event:new("InitScrollPageStates"))
-    Notification:notify(T(_("Rotation mode set to: %1"), optionsutil:getOptionText("SetRotationMode", rotation)))
-    return
+    Notification:notify(T(_("Rotation mode set to: %1"), optionsutil:getOptionText("SetRotationMode", mode)))
 end
 
 function ReaderView:onSetDimensions(dimensions)
@@ -833,11 +946,6 @@ function ReaderView:onRestoreDimensions(dimensions)
     self:recalculate()
 end
 
-function ReaderView:onSetFullScreen(full_screen)
-    self.footer_visible = not full_screen
-    self.ui:handleEvent(Event:new("SetDimensions", Screen:getSize()))
-end
-
 function ReaderView:onSetScrollMode(page_scroll)
     if self.ui.paging and page_scroll
             and self.ui.zooming.paged_modes[self.zoom_mode]
@@ -851,6 +959,7 @@ In combination with zoom to fit page, page height, content height, content or co
         })
     end
 
+    self:resetHighlightBoxesCache()
     self.page_scroll = page_scroll
     if not page_scroll then
         self.document.configurable.page_scroll = 0
@@ -877,14 +986,19 @@ function ReaderView:onReadSettings(config)
                            or Screen.DEVICE_ROTATED_UPRIGHT
         self:onSetRotationMode(rotation_mode)
     end
-    local full_screen = config:readSetting("kopt_full_screen") or self.document.configurable.full_screen
-    if full_screen == 0 then
-        self.footer_visible = false
-    end
     self:resetLayout()
-    local page_scroll = config:readSetting("kopt_page_scroll") or self.document.configurable.page_scroll
-    self.page_scroll = page_scroll == 1 and true or false
-    self.inverse_reading_order = config:isTrue("inverse_reading_order") or G_reader_settings:isTrue("inverse_reading_order")
+    self.page_scroll = (config:readSetting("kopt_page_scroll") or self.document.configurable.page_scroll) == 1
+    if config:has("inverse_reading_order") then
+        self.inverse_reading_order = config:isTrue("inverse_reading_order")
+    else
+        self.inverse_reading_order = G_reader_settings:isTrue("inverse_reading_order")
+    end
+    if config:has("invert_ui_layout") then
+        self.invert_ui_layout = config:isTrue("invert_ui_layout")
+    else
+        self.invert_ui_layout = G_reader_settings:isTrue("invert_ui_layout")
+    end
+    self.footer:invertProgressBar(self.invert_ui_layout)
     self.page_overlap_enable = config:isTrue("show_overlap_enable") or G_reader_settings:isTrue("page_overlap_enable") or G_defaults:readSetting("DSHOWOVERLAP")
     self.page_overlap_style = config:readSetting("page_overlap_style") or G_reader_settings:readSetting("page_overlap_style") or "dim"
     self.page_gap.height = Screen:scaleBySize(config:readSetting("kopt_page_gap_height")
@@ -893,8 +1007,18 @@ function ReaderView:onReadSettings(config)
 end
 
 function ReaderView:shouldInvertBiDiLayoutMirroring()
-    -- A few widgets may temporarily invert UI layout mirroring when both these settings are true
-    return self.inverse_reading_order and G_reader_settings:isTrue("invert_ui_layout_mirroring")
+    return self.invert_ui_layout
+end
+
+function ReaderView:onToggleUILayoutMiroring(toggle)
+    if toggle == nil then
+        toggle = not self.invert_ui_layout
+    end
+    if self.invert_ui_layout ~= toggle then
+        self.invert_ui_layout = toggle
+        self.footer:invertProgressBar(self.invert_ui_layout)
+    end
+    return true
 end
 
 function ReaderView:onPageUpdate(new_page_no)
@@ -922,7 +1046,7 @@ function ReaderView:onBBoxUpdate(bbox)
     self.use_bbox = bbox and true or false
 end
 
---- @note: From ReaderRotation, which is broken and disabled.
+--- @note: From ReaderRotation, which was broken, and has been removed in #12658
 function ReaderView:onRotationUpdate(rotation)
     self.state.rotation = rotation
     self:recalculate()
@@ -945,12 +1069,31 @@ function ReaderView:onReaderFooterVisibilityChange()
     if self.ui.paging and self.state.page then
         -- We don't need to do anything if reclaim is enabled ;).
         if not self.footer.settings.reclaim_height then
-            -- NOTE: Mimic what onSetFullScreen does, since, without reclaim, toggling the footer affects the available area,
+            -- NOTE: Without reclaim, toggling the footer affects the available area,
             --       so we need to recompute the full layout.
+            -- NOTE: ReaderView:recalculate will snap visible_area to page_area edges (depending on zoom direction).
+            --       We don't actually want to move here, so save & restore our current visible_area *coordinates*...
+            local x, y = self.visible_area.x, self.visible_area.y
             self.ui:handleEvent(Event:new("SetDimensions", Screen:getSize()))
-            -- NOTE: Scroll mode's behavior after this might be suboptimal (until next page),
-            --       but I'm not familiar enough with it to make it behave...
-            --       (e.g., RedrawCurrentPage & co will snap to the top of the "current" page).
+            self.visible_area.x = x
+            self.visible_area.y = y
+
+            -- Now, for scroll mode, ReaderView:recalculate does *not* affect any of the actual page_states,
+            -- so we'll fudge the bottom page's visible area ourselves,
+            -- so as not to leave a blank area behind the footer when hiding it...
+            -- This might cause the next scroll to scroll a footer height's *less* than expected,
+            -- but that should be hardly noticeable, and since we scroll less, it won't skip over anything.
+            if self.page_scroll then
+                local bottom_page = self.page_states[#self.page_states]
+                -- Not sure if this can ever be `nil`...
+                if bottom_page then
+                    if self.footer_visible then
+                        bottom_page.visible_area.h = bottom_page.visible_area.h - self.footer:getHeight()
+                    else
+                        bottom_page.visible_area.h = bottom_page.visible_area.h + self.footer:getHeight()
+                    end
+                end
+            end
         end
     end
 end
@@ -1013,6 +1156,7 @@ end
 
 function ReaderView:onSetViewMode(new_mode)
     if new_mode ~= self.view_mode then
+        self:resetHighlightBoxesCache()
         self.view_mode = new_mode
         self.document:setViewMode(new_mode)
         self.ui:handleEvent(Event:new("ChangeViewMode"))
@@ -1020,21 +1164,54 @@ function ReaderView:onSetViewMode(new_mode)
     end
 end
 
---Refresh after changing a variable done by koptoptions.lua since all of them
---requires full screen refresh. If this handler used for changing page gap from
---another source (eg. coptions.lua) triggering a redraw is needed.
+function ReaderView:resetHighlightBoxesCache(items)
+    if type(items) ~= "table" then
+        self.highlight.page_boxes = {}
+    else
+        for _, item in ipairs(items) do
+            if item.drawer then
+                local page0, page1
+                if self.ui.rolling then
+                    page0 = self.document:getPageFromXPointer(item.pos0)
+                    page1 = self.document:getPageFromXPointer(item.pos1)
+                else
+                    page0 = item.pos0.page
+                    page1 = item.pos1.page
+                end
+                for page = page0, page1 do
+                    self.highlight.page_boxes[page] = nil
+                end
+            end
+        end
+        if items.index_modified then -- annotation added or removed, shift annotations indexes
+            local index, index_shift = items.index_modified, 1
+            if index < 0 then
+                index, index_shift = -index, -1
+            end
+            for _, page_boxes in pairs(self.highlight.page_boxes) do
+                for _, box in ipairs(page_boxes) do
+                    if box.index >= index then
+                        box.index = box.index + index_shift
+                    end
+                end
+            end
+        end
+    end
+end
+
+ReaderView.onReflowUpdated = ReaderView.resetHighlightBoxesCache
+ReaderView.onDocumentRerendered = ReaderView.resetHighlightBoxesCache
+ReaderView.onAnnotationsModified = ReaderView.resetHighlightBoxesCache
+
 function ReaderView:onPageGapUpdate(page_gap)
-    self.page_gap.height = page_gap
-    Notification:notify(T(_("Page gap set to %1."), page_gap))
+    self.page_gap.height = Screen:scaleBySize(page_gap)
+    Notification:notify(T(_("Page gap set to %1."), optionsutil.formatFlexSize(page_gap)))
     return true
 end
 
 function ReaderView:onSaveSettings()
     if self.ui.paging then
-        if self.document:isEdited() and G_reader_settings:readSetting("save_document") ~= "always" then
-            -- Either "disable" (and the current tiles will be wrong) or "prompt" (but the
-            -- prompt will happen later, too late to catch "Don't save"), so force cached
-            -- tiles to be ignored on next opening.
+        if self.document:isEdited() and not self.ui.highlight.highlight_write_into_pdf then
             self.document:resetTileCacheValidity()
         end
         self.ui.doc_settings:saveSetting("tile_cache_validity_ts", self.document:getTileCacheValidity())
@@ -1047,6 +1224,7 @@ function ReaderView:onSaveSettings()
         self.document.configurable.rotation_mode = Screen:getRotationMode() -- will be saved by ReaderConfig
     end
     self.ui.doc_settings:saveSetting("inverse_reading_order", self.inverse_reading_order)
+    self.ui.doc_settings:saveSetting("invert_ui_layout", self.invert_ui_layout)
     self.ui.doc_settings:saveSetting("show_overlap_enable", self.page_overlap_enable)
     self.ui.doc_settings:saveSetting("page_overlap_style", self.page_overlap_style)
 end
@@ -1135,11 +1313,16 @@ function ReaderView:setupTouchZones()
     (self.ui.rolling or self.ui.paging):setupTouchZones()
 end
 
-function ReaderView:onToggleReadingOrder()
-    self.inverse_reading_order = not self.inverse_reading_order
-    self:setupTouchZones()
-    local is_rtl = self.inverse_reading_order ~= BD.mirroredUILayout() -- mirrored reading
-    Notification:notify(is_rtl and _("RTL page turning.") or _("LTR page turning."))
+function ReaderView:onToggleReadingOrder(toggle)
+    if toggle == nil then
+        toggle = not self.inverse_reading_order
+    end
+    if self.inverse_reading_order ~= toggle then
+        self.inverse_reading_order = toggle
+        self:setupTouchZones()
+        local is_rtl = self.inverse_reading_order ~= BD.mirroredUILayout() -- mirrored reading
+        Notification:notify(is_rtl and _("RTL page turning.") or _("LTR page turning."))
+    end
     return true
 end
 

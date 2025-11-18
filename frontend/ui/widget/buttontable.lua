@@ -94,6 +94,7 @@ function ButtonTable:init()
                 text_font_face = btn_entry.font_face,
                 text_font_size = btn_entry.font_size,
                 text_font_bold = btn_entry.font_bold,
+                menu_style = btn_entry.menu_style,
                 show_parent = self.show_parent,
             }
             if self.shrink_unneeded_width and not btn_entry.width and min_needed_button_width ~= false then
@@ -222,7 +223,7 @@ function ButtonTable:getStepScrollGrid()
         local row_num = 1
         while idx <= #self.container do
             local row = {
-                row_num = row_num, -- (not used, but may help with debugging)
+                row_num = row_num, -- (used by ScrollableContainer, and generally helpful for debugging)
                 top = offsets[idx].y, -- top of our vspan above text
                 content_top = offsets[idx+1].y, -- top of our text widget
                 content_bottom = offsets[idx+2].y - 1, -- bottom of our text widget

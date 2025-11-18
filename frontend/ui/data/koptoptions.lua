@@ -12,14 +12,19 @@ local FONT_SCALE_FACTORS = {0.2, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0, 1.1, 1.3, 1.
 -- Font sizes used for the font size widget only
 local FONT_SCALE_DISPLAY_SIZE = {12, 14, 15, 16, 17, 18, 19, 20, 22, 25, 30, 35}
 
+local DKOPTREADER_CONFIG_DOC_LANGS_CODE = require("ui/data/ocr").getOCRLangs()
+
 local KOPTREADER_CONFIG_DOC_LANGS_TEXT = {}
-for _, lang in ipairs(G_defaults:readSetting("DKOPTREADER_CONFIG_DOC_LANGS_CODE")) do
+for _, lang in ipairs(DKOPTREADER_CONFIG_DOC_LANGS_CODE) do
     local langName = IsoLanguage:getLocalizedLanguage(lang)
     if langName then
         table.insert(KOPTREADER_CONFIG_DOC_LANGS_TEXT, langName)
     else
         table.insert(KOPTREADER_CONFIG_DOC_LANGS_TEXT, lang)
     end
+end
+if #KOPTREADER_CONFIG_DOC_LANGS_TEXT == 0 then
+    KOPTREADER_CONFIG_DOC_LANGS_TEXT = {_("No OCR languages")}
 end
 
 -- Get font scale numbers as a table of strings
@@ -76,11 +81,11 @@ local KoptOptions = {
                     end
                 end,
                 -- For Dispatcher & onMakeDefault's sake
-                labels = {C_("Rotation", "⤹ 90°"), C_("Rotation", "↑ 0°"), C_("Rotation", "⤸ 90°"), C_("Rotation", "↓ 180°")},
+                labels = optionsutil.rotation_labels,
                 alternate = false,
-                values = {Screen.DEVICE_ROTATED_COUNTER_CLOCKWISE, Screen.DEVICE_ROTATED_UPRIGHT, Screen.DEVICE_ROTATED_CLOCKWISE, Screen.DEVICE_ROTATED_UPSIDE_DOWN},
+                values = optionsutil.rotation_modes,
                 default_value = Screen.DEVICE_ROTATED_UPRIGHT,
-                args = {Screen.DEVICE_ROTATED_COUNTER_CLOCKWISE, Screen.DEVICE_ROTATED_UPRIGHT, Screen.DEVICE_ROTATED_CLOCKWISE, Screen.DEVICE_ROTATED_UPSIDE_DOWN},
+                args = optionsutil.rotation_modes,
                 current_func = function() return Screen:getRotationMode() end,
                 event = "SetRotationMode",
                 name_text_hold_callback = optionsutil.showValues,
@@ -349,27 +354,24 @@ left to right or reverse, top to bottom or reverse.]]),
             {
                 name = "page_gap_height",
                 name_text = _("Page Gap"),
-                toggle = {C_("Page gap", "none"), C_("Page gap", "small"), C_("Page gap", "medium"), C_("Page gap", "large")},
-                values = {0, 8, 16, 32},
+                buttonprogress = true,
+                values = {0, 2, 4, 8, 16, 32, 64},
+                default_pos = 4,
                 default_value = 8,
-                args = {0, 8, 16, 32},
                 event = "PageGapUpdate",
+                args = {0, 2, 4, 8, 16, 32, 64},
                 enabled_func = function (configurable)
                     return optionsutil.enableIfEquals(configurable, "page_scroll", 1)
                 end,
                 name_text_hold_callback = optionsutil.showValues,
+                name_text_unit = true,
                 help_text = _([[In continuous view mode, sets the thickness of the separator between document pages.]]),
-            },
-            {
-                name = "full_screen",
-                name_text = _("Progress Bar"),
-                toggle = {_("off"), _("on")},
-                values = {1, 0},
-                default_value = 1,
-                event = "SetFullScreen",
-                args = {true, false},
-                show = false, -- toggling bottom status can be done via tap
-                name_text_hold_callback = optionsutil.showValues,
+                more_options = true,
+                more_options_param = {
+                    value_step = 1, value_hold_step = 10,
+                    value_min = 0, value_max = 256,
+                    precision = "%.1f",
+                },
             },
             {
                 name = "line_spacing",
@@ -561,11 +563,14 @@ This can also be used to remove some gray background or to convert a grayscale o
             {
                 name = "doc_language",
                 name_text = _("Document Language"),
+                enabled_func = function()
+                    return #DKOPTREADER_CONFIG_DOC_LANGS_CODE > 0
+                end,
                 toggle = KOPTREADER_CONFIG_DOC_LANGS_TEXT,
-                values = G_defaults:readSetting("DKOPTREADER_CONFIG_DOC_LANGS_CODE"),
+                values = DKOPTREADER_CONFIG_DOC_LANGS_CODE,
                 default_value = G_defaults:readSetting("DKOPTREADER_CONFIG_DOC_DEFAULT_LANG_CODE"),
                 event = "DocLangUpdate",
-                args = G_defaults:readSetting("DKOPTREADER_CONFIG_DOC_LANGS_CODE"),
+                args = DKOPTREADER_CONFIG_DOC_LANGS_CODE,
                 name_text_hold_callback = optionsutil.showValues,
                 help_text = _([[Set the language to be used by the OCR engine.]]),
             },
@@ -647,25 +652,28 @@ You might need to set it to 1 column if, in a full width document, text is incor
 }
 
 if BD.mirroredUILayout() then
-    -- The justification items {AUTO, LEFT, CENTER, RIGHT, JUSTIFY} will
-    -- be mirrored - but that's not enough: we need to swap LEFT and RIGHT,
-    -- so they appear in a more expected and balanced order to RTL users:
-    -- {JUSTIFY, LEFT, CENTER, RIGHT, AUTO}
-    local j = KoptOptions[4].options[5]
-    assert(j.name == "justification")
-    j.item_icons[2], j.item_icons[4] = j.item_icons[4], j.item_icons[2]
-    j.values[2], j.values[4] = j.values[4], j.values[2]
-    j.labels[2], j.labels[4] = j.labels[4], j.labels[2]
-    -- The zoom direction items will be mirrored, but we want them to
-    -- stay as is, as the RTL diretions are at the end of the arrays.
-    -- By reverting the mirroring, RTL directions will be on the right,
-    -- so, at the start of the options for a RTL reader.
-    j = KoptOptions[3].options[7]
-    assert(j.name == "zoom_direction")
-    util.arrayReverse(j.item_icons)
-    util.arrayReverse(j.values)
-    util.arrayReverse(j.args)
-    j.default_value = 0
+    for _, tab in ipairs(KoptOptions) do
+        for _, option in ipairs(tab.options) do
+            if option.name == "zoom_direction" then
+                -- The zoom direction items will be mirrored, but we want them to
+                -- stay as is, as the RTL directions are at the end of the arrays.
+                -- By reverting the mirroring, RTL directions will be on the right,
+                -- so, at the start of the options for a RTL reader.
+                util.arrayReverse(option.item_icons)
+                util.arrayReverse(option.values)
+                util.arrayReverse(option.args)
+                option.default_value = 0
+            elseif option.name == "justification" then
+                -- The justification items {AUTO, LEFT, CENTER, RIGHT, JUSTIFY} will
+                -- be mirrored - but that's not enough: we need to swap LEFT and RIGHT,
+                -- so they appear in a more expected and balanced order to RTL users:
+                -- {JUSTIFY, LEFT, CENTER, RIGHT, AUTO}
+                option.item_icons[2], option.item_icons[4] = option.item_icons[4], option.item_icons[2]
+                option.values[2], option.values[4] = option.values[4], option.values[2]
+                option.labels[2], option.labels[4] = option.labels[4], option.labels[2]
+            end
+        end
+    end
 end
 
 return KoptOptions

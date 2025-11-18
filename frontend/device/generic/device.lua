@@ -4,6 +4,7 @@ Generic device abstraction.
 This module defines stubs for common methods.
 --]]
 
+local Archiver = require("ffi/archiver")
 local DataStorage = require("datastorage")
 local Event = require("ui/event")
 local Geom = require("ui/geometry")
@@ -96,7 +97,7 @@ local Device = {
     stopTextInput = function() end,
 
     -- use these only as a last resort. We should abstract the functionality
-    -- and have device dependent implementations in the corresponting
+    -- and have device dependent implementations in the corresponding
     -- device/<devicetype>/device.lua file
     -- (these are functions!)
     isAndroid = no,
@@ -458,6 +459,7 @@ function Device:install()
             })
         end,
         unmovable = true,
+        dismissable = false,
     })
 end
 
@@ -608,7 +610,7 @@ function Device:exit()
     G_reader_settings:close()
 
     -- I/O teardown
-    self.input.teardown()
+    self.input:teardown()
 end
 
 -- Lifted from busybox's libbb/inet_cksum.c
@@ -1022,24 +1024,34 @@ end
 function Device:unpackArchive(archive, extract_to, with_stripped_root)
     require("dbg").dassert(type(archive) == "string")
     local BD = require("ui/bidi")
-    local ok
-    if archive:match("%.tar%.bz2$") or archive:match("%.tar%.gz$") or archive:match("%.tar%.lz$") or archive:match("%.tgz$") then
-        ok = self:untar(archive, extract_to, with_stripped_root)
-    else
-        return false, T(_("Couldn't extract archive:\n\n%1\n\nUnrecognized filename extension."), BD.filepath(archive))
+    local arc = Archiver.Reader:new()
+    local ok = arc:open(archive)
+    if ok then
+        for entry in arc:iterate() do
+            local dest_path = entry.path
+            if with_stripped_root then
+                local __, tail = dest_path:match("([^/]*)/*(.*)")
+                if tail then
+                    -- Non-root: strip one level.
+                    dest_path = tail
+                elseif entry.mode == 'directory' then
+                    -- Root directory: ignore.
+                    goto continue
+                else -- luacheck: ignore 542
+                    -- Root non-directory: don't strip.
+                end
+            end
+            if not arc:extractToPath(entry.path, extract_to.."/"..dest_path) then
+                break
+            end
+            ::continue::
+        end
+        ok = not arc.err
     end
     if not ok then
-        return false, T(_("Extracting archive failed:\n\n%1"), BD.filepath(archive))
+        return false, T(_("Extracting archive failed:\n\n%1"), BD.filepath(archive))..string.format("\n\n(%s)", arc.err)
     end
     return true
-end
-
-function Device:untar(archive, extract_to, with_stripped_root)
-    local cmd = "./tar xf %q -C %q"
-    if with_stripped_root then
-        cmd = cmd .. " --strip-components=1"
-    end
-    return os.execute(cmd:format(archive, extract_to))
 end
 
 -- Update our UIManager reference once it's ready

@@ -95,7 +95,7 @@ function ReaderRolling:init()
             -- We loaded from a valid cache file: remember its hash. It may allow not
             -- having to do any background rerendering if the user somehow reverted
             -- some setting changes before any background rerendering had completed
-            -- (ie. with autorotation, transitionning from portrait to landscape for
+            -- (ie. with autorotation, transitioning from portrait to landscape for
             -- a few seconds, to then end up back in portrait).
             self.valid_cache_rendering_hash = self.ui.document:getDocumentRenderingHash(false)
         end
@@ -116,13 +116,15 @@ end
 function ReaderRolling:onGesture() end
 
 function ReaderRolling:registerKeyEvents()
+    local nextKey = BD.mirroredUILayout() and "Left" or "Right"
+    local prevKey = BD.mirroredUILayout() and "Right" or "Left"
     if Device:hasDPad() and Device:useDPadAsActionKeys() then
         if G_reader_settings:isTrue("left_right_keys_turn_pages") then
-            self.key_events.GotoNextView = { { { "LPgFwd", "Right" } }, event = "GotoViewRel", args = 1, }
-            self.key_events.GotoPrevView = { { { "LPgBack", "Left" } }, event = "GotoViewRel", args = -1, }
+            self.key_events.GotoNextView = { { { "LPgFwd", nextKey } }, event = "GotoViewRel", args = 1, }
+            self.key_events.GotoPrevView = { { { "LPgBack", prevKey } }, event = "GotoViewRel", args = -1, }
         elseif G_reader_settings:nilOrFalse("left_right_keys_turn_pages") then
-            self.key_events.GotoNextChapter = { { "Right" }, event = "GotoNextChapter", args = 1, }
-            self.key_events.GotoPrevChapter = { { "Left" }, event = "GotoPrevChapter", args = -1, }
+            self.key_events.GotoNextChapter = { { nextKey }, event = "GotoNextChapter", args = 1, }
+            self.key_events.GotoPrevChapter = { { prevKey }, event = "GotoPrevChapter", args = -1, }
             self.key_events.GotoNextView = { { "LPgFwd" }, event = "GotoViewRel", args = 1, }
             self.key_events.GotoPrevView = { { "LPgBack" }, event = "GotoViewRel", args = -1, }
         end
@@ -133,8 +135,8 @@ function ReaderRolling:registerKeyEvents()
         self.key_events.MoveDown = { { "Down" }, event = "Panning", args = {0,  1}, }
     end
     if (Device:hasDPad() and not Device:useDPadAsActionKeys()) or (Device:hasKeys() and not Device:useDPadAsActionKeys()) then
-        self.key_events.GotoNextView = { { { "RPgFwd", "LPgFwd", "Right" } }, event = "GotoViewRel", args = 1, }
-        self.key_events.GotoPrevView = { { { "RPgBack", "LPgBack", "Left" } }, event = "GotoViewRel", args = -1, }
+        self.key_events.GotoNextView = { { { "RPgFwd", "LPgFwd", nextKey } }, event = "GotoViewRel", args = 1, }
+        self.key_events.GotoPrevView = { { { "RPgBack", "LPgBack", prevKey } }, event = "GotoViewRel", args = -1, }
     end
     if Device:hasKeyboard() and not Device.k3_alt_plus_key_kernel_translated then
         self.key_events.GotoFirst = { { "1" }, event = "GotoPercent", args = 0,   }
@@ -308,25 +310,28 @@ end
 
 function ReaderRolling:onCheckDomStyleCoherence()
     if self.ui.document and self.ui.document:isBuiltDomStale() then
-        local has_bookmarks_warn_txt = ""
         -- When using an older DOM version, bookmarks may break
-        if self.using_non_normalized_xpointers and self.ui.bookmark:hasBookmarks() then
-            has_bookmarks_warn_txt = _("\nNote that this change in styles may render your bookmarks or highlights no more valid.\nIf some of them do not show anymore, you can just revert the change you just made to have them shown again.\n\n")
-        end
-        UIManager:show(ConfirmBox:new{
-            text = T(_("Styles have changed in such a way that fully reloading the document may be needed for a correct rendering.\n%1Do you want to reload the document?"), has_bookmarks_warn_txt),
-            ok_callback = function()
-                -- Allow for ConfirmBox to be closed before showing
-                -- "Opening file" InfoMessage
-                UIManager:scheduleIn(0.5, function()
-                    -- And check we haven't quit reader in these 0.5s
-                    if self.ui.document then
-                        self.ui:reloadDocument()
-                    end
-                end)
-            end,
-        })
+        local bookmarks_warn_txt = self.using_non_normalized_xpointers and self.ui.annotation:hasAnnotations()
+            and ("\n" .. _("Note that this change in styles may render your bookmarks or highlights invalid.\nIf some of them no longer appear, you can simply revert the change you just made to show them again.") .. "\n\n")
+        self:showSuggestReloadConfirmBox(bookmarks_warn_txt)
     end
+end
+
+function ReaderRolling:showSuggestReloadConfirmBox(warn_txt)
+    UIManager:show(ConfirmBox:new{
+        text = T(_("Styles have changed in such a way that fully reloading the document may be needed for a correct rendering.\n%1Do you want to reload the document?"),
+            warn_txt or ""),
+        ok_callback = function()
+            -- Allow for ConfirmBox to be closed before showing
+            -- "Opening file" InfoMessage
+            UIManager:scheduleIn(0.5, function()
+                -- And check we haven't quit reader in these 0.5s
+                if self.ui.document then
+                    self.ui:reloadDocument()
+                end
+            end)
+        end,
+    })
 end
 
 function ReaderRolling:onSaveSettings()
@@ -841,7 +846,7 @@ function ReaderRolling:onGotoXPointer(xp, marker_xp)
                 -- rectangle to unmark it; but it might not always be just white
                 -- margin: when we're in dual page mode and crengine has drawn a
                 -- vertical pages separator - or if we have had crengine draw
-                -- some backgroud texture with credocument:setBackgroundImage().
+                -- some background texture with credocument:setBackgroundImage().
                 if self.mark_orig_content_bb then
                     -- be sure we don't leak memory if a previous one is still
                     -- hanging around
@@ -968,8 +973,8 @@ function ReaderRolling:onBatchedUpdateDone()
     if self.batched_update_count <= 0 then
         self.batched_update_count = 0
         -- Be sure any Notification gets a chance to be painted before
-        -- a blocking rerendering
-        UIManager:nextTick(self.onUpdatePos, self)
+        -- a blocking rerendering (:nextTick() is not enough)
+        UIManager:tickAfterNext(self.onUpdatePos, self)
     end
 end
 
@@ -1148,7 +1153,7 @@ function ReaderRolling:_gotoPos(new_pos, do_dim_area)
         self.ui:handleEvent(Event:new("PageChangeAnimation", new_pos > self.current_pos))
     end
     self.ui.document:gotoPos(new_pos)
-    -- The current page we get in scroll mode may be a bit innacurate,
+    -- The current page we get in scroll mode may be a bit inaccurate,
     -- but we give it anyway to onPosUpdate so footer and statistics can
     -- keep up with page.
     self.current_page = self.ui.document:getCurrentPage()
@@ -1241,7 +1246,7 @@ function ReaderRolling:onSetStatusLine(status_line)
     self.cre_top_bar_enabled = status_line == 0
     -- (We used to toggle the footer when toggling the top status bar,
     -- but people seem to like having them both, and it feels more
-    -- practicable to have the independant.)
+    -- practicable to have the independent.)
     self:onUpdatePos()
 end
 
@@ -1681,7 +1686,7 @@ function ReaderRolling:handlePartialRerendering()
 end
 
 function ReaderRolling:_waitOrKillCurrentRerenderingSubprocess(wait, kill)
-    -- No need for an asynchronous collector: we'll explicitely call this and wait
+    -- No need for an asynchronous collector: we'll explicitly call this and wait
     -- before going on, even when reloading, to avoid having multiple possibly huge
     -- subprocesses at the same time.
     -- Returns true if the process is no longer running.
@@ -1913,7 +1918,7 @@ function ReaderRolling:_rerenderInBackground()
         -- (which happens when CSS properties "display:" and "white-space:" have changed for some nodes, which
         -- is rather rare with our style tweaks) here, and do the reload and rerendering in this same background
         -- subprocess, and doing this would hide this whole thing from the user, making the UX seamless.
-        -- But this would need a lot more memory, as we would then have 2 independant DOM in memory.
+        -- But this would need a lot more memory, as we would then have 2 independent DOM in memory.
         -- Ie. with a big book and KOReader taking 120 MB, the subprocess would additionally use:
         -- - 60 MB when doing a simple rerendering
         -- - 130 MB when doing a full load+render

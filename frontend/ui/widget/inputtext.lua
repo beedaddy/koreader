@@ -77,6 +77,9 @@ function InputText:onUnfocus() end
 -- Resync our position state with our text widget's actual state
 function InputText:resyncPos()
     self.charpos, self.top_line_num = self.text_widget:getCharPos()
+    if self.strike_callback and self.min_buffer_size == nil then -- not Terminal plugin input
+        self.strike_callback()
+    end
 end
 
 local function initTouchEvents()
@@ -142,6 +145,11 @@ local function initTouchEvents()
                 if self.keyboard then
                     self.keyboard:showKeyboard()
                 end
+                -- Make sure we're flagged as in focus again.
+                -- NOTE: self:focus() does a full free/reinit cycle, which is completely unnecessary to begin with,
+                --       *and* resets cursor position, which is problematic when tapping on an already in-focus field (#12444).
+                --       So, just flip our own focused flag, that's the only thing we need ;).
+                self.focused = true
             end
             if self._frame_textwidget.dimen ~= nil -- zh keyboard with candidates shown here has _frame_textwidget.dimen = nil
                     and #self.charlist > 0 then -- do not move cursor within a hint
@@ -297,13 +305,15 @@ end
 local function initDPadEvents()
     if Device:hasDPad() then
         function InputText:onFocus()
-            -- Event called by the focusmanager
+            -- Event sent by focusmanager
             if self.parent.onSwitchFocus then
                 self.parent:onSwitchFocus(self)
             elseif (Device:hasKeyboard() or Device:hasScreenKB()) and G_reader_settings:isFalse("virtual_keyboard_enabled") then
                 do end -- luacheck: ignore 541
             else
-                self:onShowKeyboard()
+                if not self:isKeyboardVisible() then
+                    self:onShowKeyboard()
+                end
             end
             self:focus()
             return true
@@ -454,7 +464,7 @@ function InputText:initTextBox(text, char_added)
             padding = self.padding,
             padding_top = 0,
             padding_bottom = 0,
-            margin = self.margin,
+            margin = self.margin + self.bordersize,
             self._check_button,
         }
     else
@@ -623,7 +633,7 @@ function InputText:onKeyPress(key)
         elseif key["Right"] then
             self:rightChar()
         -- NOTE: When we are not showing the virtual keyboard, let focusmanger handle up/down keys, as they  are used to directly move around the widget
-        --       seemlessly in and out of text fields and onto virtual buttons like `[cancel] [search dict]`, no need to unfocus first.
+        --       seamlessly in and out of text fields and onto virtual buttons like `[cancel] [search dict]`, no need to unfocus first.
         elseif key["Up"] and G_reader_settings:nilOrTrue("virtual_keyboard_enabled") then
             self:upLine()
         elseif key["Down"] and G_reader_settings:nilOrTrue("virtual_keyboard_enabled") then
@@ -696,7 +706,7 @@ function InputText:onKeyPress(key)
             handled = false
         end
     end
-    if not handled and Device:hasDPad() then
+    if not handled then
         -- FocusManager may turn on alternative key maps.
         -- These key map maybe single text keys.
         -- It will cause unexpected focus move instead of enter text to InputText
@@ -767,6 +777,8 @@ function InputText:isKeyboardVisible()
     if self.keyboard then
         return self.keyboard:isVisible()
     end
+    -- NOTE: Never return `nil`, to avoid inheritance issues in (Multi)InputDialog's keyboard_visible flag.
+    return false
 end
 
 function InputText:lockKeyboard(toggle)
@@ -796,16 +808,16 @@ end
 
 -- calculate current and last (original) line numbers
 function InputText:getLineNums()
-    local cur_line_num, last_line_num = 1, 1
+    local curr_line_num, last_line_num = 1, 1
     for i = 1, #self.charlist do
         if self.text_widget.charlist[i] == "\n" then
             if i < self.charpos then
-                cur_line_num = cur_line_num + 1
+                curr_line_num = curr_line_num + 1
             end
             last_line_num = last_line_num + 1
         end
     end
-    return cur_line_num, last_line_num
+    return curr_line_num, last_line_num
 end
 
 -- calculate charpos for the beginning of (original) line
@@ -913,6 +925,7 @@ function InputText:delWord(left_to_cursor)
         return
     end
     local start_pos, end_pos = self:getStringPos(true, left_to_cursor)
+    start_pos = math.min(start_pos, end_pos)
     for i = end_pos, start_pos, -1 do
         table.remove(self.charlist, i)
     end

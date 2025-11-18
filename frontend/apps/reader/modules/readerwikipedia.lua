@@ -130,6 +130,7 @@ function ReaderWikipedia:addToMainMenu(menu_items)
             checked_func = function()
                 return G_reader_settings:readSetting(setting, default) == value
             end,
+            radio = true,
             callback = function()
                 G_reader_settings:saveSetting(setting, value)
             end,
@@ -260,32 +261,40 @@ You can choose an existing folder, or use a default folder named "Wikipedia" in 
                 separator = true,
             },
             {
-                text = _("Enable Wikipedia history"),
+                text = _("Wikipedia lookup history"),
                 checked_func = function()
                     return not self.disable_history
                 end,
-                callback = function()
-                    self.disable_history = not self.disable_history
-                    G_reader_settings:saveSetting("wikipedia_disable_history", self.disable_history)
-                end,
-            },
-            {
-                text = _("Clean Wikipedia history"),
-                enabled_func = function()
-                    return wikipedia_history:has("wikipedia_history")
-                end,
-                keep_menu_open = true,
-                callback = function(touchmenu_instance)
-                    UIManager:show(ConfirmBox:new{
-                        text = _("Clean Wikipedia history?"),
-                        ok_text = _("Clean"),
-                        ok_callback = function()
-                            -- empty data table to replace current one
-                            wikipedia_history:reset{}
-                            touchmenu_instance:updateItems()
+                sub_item_table = {
+                    {
+                        text = _("Enable Wikipedia history"),
+                        checked_func = function()
+                            return not self.disable_history
                         end,
-                    })
-                end,
+                        callback = function()
+                            self.disable_history = not self.disable_history
+                            G_reader_settings:saveSetting("wikipedia_disable_history", self.disable_history)
+                        end,
+                    },
+                    {
+                        text = _("Clean Wikipedia history"),
+                        enabled_func = function()
+                            return wikipedia_history:has("wikipedia_history")
+                        end,
+                        keep_menu_open = true,
+                        callback = function(touchmenu_instance)
+                            UIManager:show(ConfirmBox:new{
+                                text = _("Clean Wikipedia history?"),
+                                ok_text = _("Clean"),
+                                ok_callback = function()
+                                    -- empty data table to replace current one
+                                    wikipedia_history:reset{}
+                                    touchmenu_instance:updateItems()
+                                end,
+                            })
+                        end,
+                    },
+                },
                 separator = true,
             },
             { -- setting used in wikipedia.lua
@@ -356,16 +365,16 @@ function ReaderWikipedia:initLanguages(word)
     end
 end
 
-function ReaderWikipedia:onLookupWikipedia(word, is_sane, box, get_fullpage, forced_lang)
+function ReaderWikipedia:onLookupWikipedia(word, is_sane, box, get_fullpage, forced_lang, dict_close_callback)
     -- Wrapped through Trapper, as we may be using Trapper:dismissableRunInSubprocess() in it
     Trapper:wrap(function()
-        self:lookupWikipedia(word, is_sane, box, get_fullpage, forced_lang)
+        self:lookupWikipedia(word, is_sane, box, get_fullpage, forced_lang, dict_close_callback)
     end)
     return true
 end
 
-function ReaderWikipedia:lookupWikipedia(word, is_sane, box, get_fullpage, forced_lang)
-    if NetworkMgr:willRerunWhenOnline(function() self:lookupWikipedia(word, is_sane, box, get_fullpage, forced_lang) end) then
+function ReaderWikipedia:lookupWikipedia(word, is_sane, box, get_fullpage, forced_lang, dict_close_callback)
+    if NetworkMgr:willRerunWhenOnline(function() self:lookupWikipedia(word, is_sane, box, get_fullpage, forced_lang, dict_close_callback) end) then
         -- Not online yet, nothing more to do here, NetworkMgr will forward the callback and run it once connected!
         return
     end
@@ -497,7 +506,7 @@ function ReaderWikipedia:lookupWikipedia(word, is_sane, box, get_fullpage, force
         results.no_result = true
         logger.dbg("dummy result table:", word, results)
     end
-    self:showDict(word, results, box)
+    self:showDict(word, results, box, nil, dict_close_callback)
 end
 
 function ReaderWikipedia:getWikiLanguages(first_lang)

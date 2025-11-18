@@ -88,7 +88,7 @@ local ImageWidget = Widget:extend{
     --   Special case: scale_factor == 0 : image will be scaled to best fit provided
     --   width and height, keeping aspect ratio (scale_factor will be updated
     --   from 0 to the factor used at _render() time)
-    -- If scale_factor is nil and stretch_limit_percantage is provided:
+    -- If scale_factor is nil and stretch_limit_percentage is provided:
     --   If the aspect ratios of the image and the width/height provided don't differ by more than
     --   stretch_limit_percentage, then stretch the image (as scale_factor=nil);
     --   otherwise, scale to best fit (as scale_factor=0)
@@ -140,7 +140,7 @@ function ImageWidget:_loadfile()
         -- and use them in cache hash, when self.scale_factor is nil, when we are sure
         -- we don't need to keep aspect ratio.
         local width, height
-        if self.scale_factor == nil then
+        if self.scale_factor == nil and self.stretch_limit_percentage == nil then
             width = self.width
             height = self.height
         end
@@ -284,7 +284,7 @@ function ImageWidget:_render()
             -- we get corrupted images when using it for scaling such blitbuffers.
             -- We need to make a real new blitbuffer with rotated content:
             local rot_bb = self._bb:rotatedCopy(self.rotation_angle)
-            -- We made a new blitbuffer, we need to explicitely free
+            -- We made a new blitbuffer, we need to explicitly free
             -- the old one to not leak memory
             if self._bb_disposable then
                 self._bb:free()
@@ -330,7 +330,7 @@ function ImageWidget:_render()
 
     -- replace blitbuffer with a resized one if needed
     if self.scale_factor == nil then
-        -- no scaling, but strech to width and height, only if provided and needed
+        -- no scaling, but stretch to width and height, only if provided and needed
         if self.width and self.height and (self.width ~= bb_w or self.height ~= bb_h) then
             logger.dbg("ImageWidget: stretching")
             self._bb = RenderImage:scaleBlitBuffer(self._bb, self.width, self.height, self._bb_disposable)
@@ -578,12 +578,12 @@ function ImageWidget:paintTo(bb, x, y)
     ---        This would require the *original* transparent icon, not the flattened one in the cache.
     ---        c.f., https://github.com/koreader/koreader/pull/6937#issuecomment-748372429 for a PoC
     if self.dim then
-        bb:dimRect(x, y, size.w, size.h)
+        bb:lightenRect(x, y, size.w, size.h)
     end
     -- In night mode, invert all rendered images, so the original is
     -- displayed when the whole screen is inverted by night mode.
     -- Except for our *black & white* icons: we do *NOT* want to invert them again:
-    -- they should match the UI's text/backgound.
+    -- they should match the UI's text/background.
     --- @note: As for *color* icons, we really *ought* to invert them here,
     ---        but we currently don't, as we don't really trickle down
     ---        a way to discriminate them from the B&W ones.
@@ -594,7 +594,7 @@ function ImageWidget:paintTo(bb, x, y)
 end
 
 -- This will normally be called by our WidgetContainer:free()
--- But it SHOULD explicitely be called if we are getting replaced
+-- But it SHOULD explicitly be called if we are getting replaced
 -- (ie: in some other widget's update()), to not leak memory with
 -- BlitBuffer zombies
 function ImageWidget:free()

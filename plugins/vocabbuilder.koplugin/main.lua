@@ -234,6 +234,7 @@ function MenuDialog:setupPluginMenu()
                     text = _("Delete"),
                     callback = function()
                         settings.server = nil
+                        SyncService.removeLastSyncDB(DB.path)
                         UIManager:close(self.sync_dialogue)
                     end
                 },
@@ -248,6 +249,11 @@ function MenuDialog:setupPluginMenu()
                         end
 
                         sync_settings.onConfirm = function(chosen_server)
+                            if settings.server.type ~= chosen_server.type
+                                or settings.server.url ~= chosen_server.url
+                                or settings.server.address ~= chosen_server.address then
+                                    SyncService.removeLastSyncDB(DB.path)
+                            end
                             settings.server = chosen_server
                         end
                         UIManager:show(sync_settings)
@@ -378,7 +384,7 @@ function MenuDialog:setupBookMenu(sort_item, onSuccess)
                     item.callback()
                 end
             end
-            self.show_parent:goToPage(self.show_parent.show_page)
+            self.show_parent:onGoToPage(self.show_parent.show_page)
         end
     }
     local select_all_button = {
@@ -390,7 +396,7 @@ function MenuDialog:setupBookMenu(sort_item, onSuccess)
                     item.callback()
                 end
             end
-            self.show_parent:goToPage(self.show_parent.show_page)
+            self.show_parent:onGoToPage(self.show_parent.show_page)
         end
     }
     local select_page_all_button = {
@@ -402,7 +408,7 @@ function MenuDialog:setupBookMenu(sort_item, onSuccess)
                     content.item.callback()
                 end
             end
-            self.show_parent:goToPage(self.show_parent.show_page)
+            self.show_parent:onGoToPage(self.show_parent.show_page)
         end
     }
     local deselect_page_all_button = {
@@ -414,7 +420,7 @@ function MenuDialog:setupBookMenu(sort_item, onSuccess)
                     content.item.callback()
                 end
             end
-            self.show_parent:goToPage(self.show_parent.show_page)
+            self.show_parent:onGoToPage(self.show_parent.show_page)
         end
     }
     local buttons = ButtonTable:new{
@@ -497,7 +503,9 @@ end
 Individual word info dialogue widget
 --]]--
 local WordInfoDialog = FocusManager:extend{
+    word = nil,
     title = nil,
+    highlighted_word = nil,
     book_title = nil,
     dates = nil,
     padding = Size.padding.large,
@@ -505,6 +513,7 @@ local WordInfoDialog = FocusManager:extend{
     tap_close_callback = nil,
     remove_callback = nil,
     reset_callback = nil,
+    update_callback = nil, -- used when duplicate word found when adding
     dismissable = true, -- set to false if any button callback is required
 }
 local book_title_triangle = BD.mirroredUILayout() and " ⯇" or " ⯈"
@@ -557,8 +566,22 @@ function WordInfoDialog:init()
         end
     }
 
-    local buttons = {{reset_button, remove_button}}
-    if self.vocabbuilder.item.last_due_time then
+    local cancel_button = {
+        text = _("Cancel"),
+        callback = function()
+            UIManager:close(self)
+        end
+    }
+    local update_button = {
+        text = _("Overwrite"),
+        callback = function()
+            self.update_callback()
+            UIManager:close(self)
+        end
+    }
+
+    local buttons = self.update_callback and {{cancel_button, update_button}} or {{reset_button, remove_button}}
+    if self.vocabbuilder and self.vocabbuilder.item.last_due_time then
         table.insert(buttons, {{
             text = _("Undo study status"),
             callback = function()
@@ -577,7 +600,7 @@ function WordInfoDialog:init()
     local copy_button = Button:new{
         text = "", -- copy in nerdfont,
         callback = function()
-            Device.input.setClipboardText(self.title)
+            Device.input.setClipboardText(self.word)
             UIManager:show(Notification:new{
                 text = _("Word copied to clipboard."),
             })
@@ -585,7 +608,7 @@ function WordInfoDialog:init()
         bordersize = 0,
     }
     self.book_title_button = Button:new{
-        text = self.book_title .. book_title_triangle,
+        text = self.book_title .. (self.update_callback and '' or book_title_triangle),
         width = width,
         text_font_face = "NotoSans-Italic.ttf",
         text_font_size = 14,
@@ -594,10 +617,12 @@ function WordInfoDialog:init()
         padding = Size.padding.button,
         bordersize = 0,
         callback = function()
-            self.vocabbuilder:onShowBookAssignment(function(new_book_title)
-                self.book_title = new_book_title
-                self.book_title_button:setText(new_book_title..book_title_triangle, width)
-            end)
+            if self.vocabbuilder then
+                self.vocabbuilder:onShowBookAssignment(function(new_book_title)
+                    self.book_title = new_book_title
+                    self.book_title_button:setText(new_book_title..book_title_triangle, width)
+                end)
+            end
         end,
         show_parent = self
     }
@@ -636,7 +661,7 @@ function WordInfoDialog:init()
                             VerticalSpan:new{width= Size.padding.default},
                             has_context and
                             TextBoxWidget:new{
-                                text = "..." .. (self.prev_context or ""):gsub("\n", " ") .. "【" ..self.title.."】" .. (self.next_context or ""):gsub("\n", " ") .. "...",
+                                text = "..." .. (self.prev_context or ""):gsub("\n", " ") .. "【" ..(self.highlighted_word or self.title).."】" .. (self.next_context or ""):gsub("\n", " ") .. "...",
                                 width = width,
                                 face = Font:getFace("smallffont"),
                                 alignment = self.title_align or "left",
@@ -743,7 +768,7 @@ local VocabItemWidget = InputContainer:extend{
 --[[--
     item: {
         checked_func: Block,
-        review_count: interger,
+        review_count: integer,
         word: Text
         book_title: TEXT
         create_time: Integer
@@ -1033,11 +1058,15 @@ function VocabItemWidget:removeAndClose()
 end
 
 function VocabItemWidget:showMore()
+    -- @translators Used in vocabbuilder: %1 date
+    local date_str = T(_("Added on %1"), os.date("%Y-%m-%d", self.item.create_time))
+    -- @translators Used in vocabbuilder: %1 time
+    local time_str = T(_("Review scheduled at %1"), os.date("%Y-%m-%d %H:%M", self.item.due_time))
     local dialogue = WordInfoDialog:new{
         title = self.item.word,
+        highlighted_word = self.item.highlight,
         book_title = self.item.book_title,
-        dates = _("Added on") .. " " .. os.date("%Y-%m-%d", self.item.create_time) .. " | " ..
-        _("Review scheduled at") .. " " .. os.date("%Y-%m-%d %H:%M", self.item.due_time),
+        dates = date_str .. " | " .. time_str,
         prev_context = self.item.prev_context,
         next_context = self.item.next_context,
         remove_callback = function()
@@ -1190,7 +1219,7 @@ function VocabItemWidget:onShowBookAssignment(title_changed_cb)
                                             self.show_parent:showChangeBookTitleDialog(sort_item, onSuccess)
                                         end
                                     })
-                                    sort_widget:goToPage(sort_widget.show_page)
+                                    sort_widget:onGoToPage(sort_widget.show_page)
                                 else
                                     UIManager:show(require("ui/widget/notification"):new{
                                         text = _("Book title already in use."),
@@ -2024,19 +2053,35 @@ function VocabBuilder:onDictButtonsReady(dict_popup, buttons)
     if dict_popup.is_wiki_fullpage then
         return
     end
+    local is_adding = true
     table.insert(buttons, 1, {{
         id = "vocabulary",
         text = _("Add to vocabulary builder"),
         font_bold = false,
         callback = function()
-            local book_title = (dict_popup.ui.doc_props and dict_popup.ui.doc_props.display_title) or _("Dictionary lookup")
-            dict_popup.ui:handleEvent(Event:new("WordLookedUp", dict_popup.word, book_title, true)) -- is_manual: true
             local button = dict_popup.button_table.button_by_id["vocabulary"]
-            if button then
-                button:disable()
+            if not button then return end
+            if is_adding then
+                is_adding = false
+                local book_title = (dict_popup.ui.doc_props and dict_popup.ui.doc_props.display_title) or _("Dictionary lookup")
+                dict_popup.ui:handleEvent(Event:new("WordLookedUp", dict_popup.lookupword, book_title, true)) -- is_manual: true
+                button:setText(_("Remove from vocabulary builder"), button.width)
                 UIManager:setDirty(dict_popup, function()
                     return "ui", button.dimen
                 end)
+            else
+                UIManager:show(ConfirmBox:new{
+                    text = T(_("Remove word \"%1\" from vocabulary builder?"), dict_popup.lookupword),
+                    ok_text = _("Remove"),
+                    ok_callback = function()
+                        is_adding = true
+                        DB:remove({word = dict_popup.lookupword})
+                        button:setText(_("Add to vocabulary builder"), button.width)
+                        UIManager:setDirty(dict_popup, function()
+                            return "ui", button.dimen
+                        end)
+                    end
+                })
             end
         end
     }})
@@ -2062,16 +2107,42 @@ function VocabBuilder:onWordLookedUp(word, title, is_manual)
     if self.widget and self.widget.current_lookup_word == word then return true end
     local prev_context
     local next_context
+    local highlight
     if settings.with_context and self.ui.highlight then
         prev_context, next_context = self.ui.highlight:getSelectedWordContext(15)
+        if self.ui.highlight.selected_text and self.ui.highlight.selected_text.text then
+            highlight = util.cleanupSelectedText(self.ui.highlight.selected_text.text)
+        end
     end
-    DB:insertOrUpdate({
+
+    local update = function() DB:insertOrUpdate({
         book_title = title,
         time = os.time(),
         word = word,
         prev_context = prev_context,
-        next_context = next_context
-    })
+        next_context = next_context,
+        highlight = highlight ~= word and highlight or nil
+    }) end
+
+    local item = DB:hasWord(word)
+    if item then
+        local date_str = T(_("Added on %1"), os.date("%Y-%m-%d", item.create_time))
+        local time_str = T(_("Review scheduled at %1"), os.date("%Y-%m-%d %H:%M", item.due_time))
+        local dialog = WordInfoDialog:new{
+            title = _("Vocabulary exists:") .. " " .. word,
+            word = word,
+            highlighted_word = item.highlight or word,
+            book_title = item.book_title,
+            dates = date_str .. " | " .. time_str,
+            prev_context = item.prev_context,
+            next_context = item.next_context,
+            update_callback = update,
+        }
+        UIManager:show(dialog)
+    else
+        update()
+    end
+
     return true
 end
 

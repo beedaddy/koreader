@@ -8,7 +8,7 @@ local CheckButton = require("ui/widget/checkbutton")
 local ConfirmBox = require("ui/widget/confirmbox")
 local Device = require("device")
 local DateTimeWidget = require("ui/widget/datetimewidget")
-local DoubleSpinWidget = require("/ui/widget/doublespinwidget")
+local DoubleSpinWidget = require("ui/widget/doublespinwidget")
 local DeviceListener = require("device/devicelistener")
 local Dispatcher = require("dispatcher")
 local Event = require("ui/event")
@@ -79,6 +79,7 @@ function AutoWarmth:init()
 
     self.control_warmth = G_reader_settings:nilOrTrue("autowarmth_control_warmth")
     self.control_nightmode = G_reader_settings:nilOrTrue("autowarmth_control_nightmode")
+    self.hide_nightmode_warning = G_reader_settings:isTrue("autowarmth_hide_nightmode_warning")
     if not Device:hasNaturalLight() then
         self.control_nightmode = true
     elseif not self.control_warmth and not self.control_nightmode then
@@ -110,7 +111,7 @@ function AutoWarmth:init()
         i = j
     end
 
-    -- schedule recalculation shortly afer midnight
+    -- schedule recalculation shortly after midnight
     self:scheduleMidnightUpdate()
 end
 
@@ -219,6 +220,13 @@ function AutoWarmth:_onToggleNightMode()
                 text = _("Hide the warning until the next book is opened"),
                 provider = function()
                     self.hide_nightmode_warning = true
+                end,
+            }},
+            {{
+                text = _("Hide this warning permanently"),
+                provider = function()
+                    self.hide_nightmode_warning = true
+                    G_reader_settings:makeTrue("autowarmth_hide_nightmode_warning")
                 end,
             }},
             {{
@@ -352,7 +360,7 @@ function AutoWarmth:scheduleMidnightUpdate(from_resume)
         self.current_times_h[1] = nil   -- Solar midnight prev. day
         self.current_times_h[2] = nil   -- Astronomical dawn
         self.current_times_h[3] = nil   -- Nautical dawn
-        self.current_times_h[6] = nil   -- Solar noon
+        -- self.current_times_h[6] = nil   -- Solar noon
         self.current_times_h[9] = nil   -- Nautical dusk
         self.current_times_h[10] = nil  -- Astronomical dusk
         self.current_times_h[11] = nil  -- Solar midnight
@@ -608,6 +616,7 @@ function AutoWarmth:getSubMenuItems()
                 return not self.easy_mode
             end,
             help_text = _("In the expert mode, different types of twilight can be used in addition to civil twilight."),
+            check_callback_updates_menu = true,
             callback = function(touchmenu_instance)
                 self.easy_mode = not self.easy_mode
                 G_reader_settings:saveSetting("autowarmth_easy_mode", self.easy_mode)
@@ -641,9 +650,20 @@ function AutoWarmth:getSubMenuItems()
                 return self.activate ~= 0
             end,
             text = Device:hasNaturalLight() and _("Warmth and night mode settings") or _("Night mode settings"),
-            sub_item_table = self:getWarmthMenu(),
+            sub_item_table_func = function() return self:getWarmthMenu() end,
         },
         self:getFlOffDuringDayMenu(),
+        {
+            text = _("Enable night mode warning"),
+            checked_func = function()
+                return not self.hide_nightmode_warning
+            end,
+            callback = function()
+                self.hide_nightmode_warning = not self.hide_nightmode_warning
+                G_reader_settings:saveSetting("autowarmth_hide_nightmode_warning", self.hide_nightmode_warning)
+            end,
+            separator = true,
+        },
         self:getTimesMenu(_("Currently active parameters")),
         self:getTimesMenu(_("Sun position information for"), true, activate_sun),
         self:getTimesMenu(_("Fixed schedule information"), false, activate_schedule),
@@ -662,6 +682,7 @@ function AutoWarmth:getFlOffDuringDayMenu()
                 return _("Frontlight off during day")
             end
         end,
+        check_callback_updates_menu = true,
         callback = function(touchmenu_instance)
             if self.easy_mode then
                 self.fl_off_during_day = not self.fl_off_during_day
@@ -676,7 +697,7 @@ function AutoWarmth:getFlOffDuringDayMenu()
   • off after sunrise and
   • on before sunset.]],
                     ok_always_enabled = true,
-                    -- read the saved setting, as this get's not overwritten by toggling easy_mode
+                    -- read the saved setting, as this gets overwritten by toggling easy_mode
                     value = G_reader_settings:readSetting("autowarmth_fl_off_during_day_offset_s", 0) * (1/60),
                     value_min = -15,
                     value_max = 30,
@@ -720,7 +741,6 @@ For cloudy autumn days, the switch-on/off time can be shifted by an offset.]]),
             })
         end,
         keep_menu_open = true,
-        separator = true,
     }
 end
 
@@ -889,6 +909,7 @@ function AutoWarmth:getScheduleMenu()
             checked_func = function()
                 return self.scheduler_times[num] ~= nil
             end,
+            check_callback_updates_menu = true,
             callback = function(touchmenu_instance)
                 local hh = 12
                 local mm = 0
@@ -1112,6 +1133,7 @@ function AutoWarmth:getWarmthMenu()
                     })
                 end
             end,
+            check_callback_updates_menu = true,
             callback = function(touchmenu_instance)
                 if Device:hasNaturalLight() then
                     if self.control_warmth and self.control_nightmode then
@@ -1144,7 +1166,7 @@ function AutoWarmth:getWarmthMenu()
             text = Device:hasNaturalLight() and _("Set warmth and night mode for:") or _("Set night mode for:"),
             enabled = false,
         },
-        getWarmthMenuEntry(_("Solar noon"), 6, false),
+        getWarmthMenuEntry(_("Solar noon"), 6),
         getWarmthMenuEntry(_("Sunset and sunrise"), 5),
         getWarmthMenuEntry(_("Darkest time of civil twilight"), 4),
         getWarmthMenuEntry(_("Darkest time of nautical twilight"), 3, false),
@@ -1243,7 +1265,7 @@ function AutoWarmth:showTimesInfo(title, location, activator, request_easy)
     local face = Font:getFace("scfont")
     UIManager:show(InfoMessage:new{
         face = face,
-        width = math.floor(Screen:getWidth() * (self.easy_mode and 0.75 or 0.90)),
+        width = math.floor(Screen:getWidth() * (self.easy_mode and 0.85 or 0.90)),
         text = title .. location_string .. ":\n\n" ..
             info_line(0, _("Solar midnight:"), times[1], 1, face, request_easy) ..
             add_line(2, _("Dawn"), request_easy) ..
@@ -1254,8 +1276,8 @@ function AutoWarmth:showTimesInfo(title, location, activator, request_easy)
             add_line(2, _("Dawn"), request_easy) ..
             info_line(0, _("Sunrise:"), times[5], 5, face) ..
             "\n" ..
-            info_line(0, _("Solar noon:"), times[6], 6, face, request_easy) ..
-            add_line(0, "", request_easy) ..
+            info_line(0, _("Solar noon:"), times[6], 6, face) ..
+            "\n" ..
             info_line(0, _("Sunset:"), times[7], 7, face) ..
             add_line(2, _("Dusk"), request_easy) ..
             info_line(request_easy and 0 or 4,

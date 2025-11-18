@@ -111,7 +111,7 @@ check_submodules() {
     # due to `git submodule status` returning an error
     # on `grep -q …` early exit (broken pipe).
     if grep -qE '^-' <<<"$(git submodule status)"; then
-        run_make fetchthirdparty
+        TARGET='' run_make fetchthirdparty
     fi
 }
 
@@ -141,10 +141,13 @@ TARGET:
     kindlepw2                 With compiler optimizations for Kindle models >= Paperwhite 2
     kindle-legacy             Needed only for Kindle2/3/DXG
     kobo
+    kobov4                    Compatible with Mk.7+ Kobo devices on FW 4.x
+    kobov5                    Compatible with all Kobo & Tolino devices on FW 5.x
     linux
     macos                     MacOS app bundle
     pocketbook
     remarkable
+    remarkable-aarch64
     sony-prstux
     ubuntu-touch
     win32
@@ -174,9 +177,10 @@ function setup_target() {
             ;;
         cervantes) ;;
         kindle | kindlehf | kindlepw2 | kindle-legacy) ;;
-        kobo) ;;
+        kobo | kobov4 | kobov5) ;;
         pocketbook) ;;
         remarkable) ;;
+        remarkable-aarch64) ;;
         sony-prstux) ;;
         ubuntu-touch) ;;
         # Invalid.
@@ -192,6 +196,15 @@ function setup_target() {
     if [[ -z ${KODEBUG+x} && -z "${TARGET}" && "${CMD}" != 'release' ]]; then
         # For the emulator, build a debug build by default.
         KODEBUG=1
+    fi
+    # Fetch third party as needed.
+    check_submodules
+    # Automatically install Android NDK / SDK when not configured.
+    if [[ "${TARGET}" == 'android' ]]; then
+        local wanted=()
+        [[ -n "${ANDROID_NDK_HOME}${ANDROID_NDK_ROOT}" ]] || wanted+=('android-ndk')
+        [[ -n "${ANDROID_HOME}${ANDROID_SDK_ROOT}" ]] || wanted+=('android-sdk')
+        [[ ${#wanted} -eq 0 ]] || TARGET='' run_make "${wanted[@]}"
     fi
 }
 
@@ -286,8 +299,8 @@ function parse_options() {
         exit ${E_OPTERR}
     fi
     ARGS=("$@")
-    # echo "OPTS: ${OPTS[@]} [${#OPTS[@]}]"
-    # echo "ARGS: ${ARGS[@]} [${#ARGS[@]}]"
+    # echo "OPTS [${#OPTS[@]}]: $(print_quoted "${OPTS[@]}")"
+    # echo "ARGS [${#ARGS[@]}]: $(print_quoted "${ARGS[@]}")"
 }
 
 # }}}
@@ -298,7 +311,6 @@ function kodev-activate() {
     parse_options '' '' '0' "$@"
     info "adding ${CURDIR} to \$PATH..."
     export PATH="${PATH}:${CURDIR}"
-    eval "$(luarocks --lua-version=5.1 path --bin)"
     exec "${SHELL}"
 }
 
@@ -334,10 +346,6 @@ ${TARGETS_HELP_MSG}
 "
     parse_options "${BUILD_GETOPT_SHORT}" "${BUILD_GETOPT_LONG}" '?' "$@"
     setup_target "${ARGS[0]}"
-    check_submodules
-    if [[ "${TARGET}" == 'android' && -z "${ANDROID_NDK_HOME}${ANDROID_NDK_ROOT}" ]]; then
-        TARGET='' run_make android-ndk
-    fi
     run_make ${NO_BUILD:+setup}
 }
 
@@ -376,16 +384,12 @@ ${RELEASE_TARGETS_HELP_MSG}
         esac
     done
     setup_target "${ARGS[0]}"
-    check_submodules
     if [[ "${ignore_translation}" -eq 0 ]]; then
-        if ! run_make po; then
+        if ! TARGET='' run_make po; then
             err "ERROR: failed to fetch translation."
             echo "Tip: Use --ignore-translation OPTION if you want to build a release without translation." 2>&1
             exit 1
         fi
-    fi
-    if [[ "${TARGET}" == 'android' ]] && [[ -z "${ANDROID_NDK_HOME}${ANDROID_NDK_ROOT}" || -z "${ANDROID_HOME}${ANDROID_SDK_ROOT}" ]]; then
-        TARGET='' run_make android-ndk android-sdk
     fi
     run_make ${NO_BUILD:+--assume-old=all} update
 }
@@ -402,7 +406,11 @@ $(build_options_help_msg '' 'use existing build' 'default' '')
 "
     parse_options "${BUILD_GETOPT_SHORT}" "${BUILD_GETOPT_LONG}" '0' "$@"
     setup_target 'emulator'
-    run_make ${NO_BUILD:+--assume-old=all} run-prompt
+    local margs=()
+    if command -v rlwrap >/dev/null; then
+        margs+=(RWRAP='rlwrap')
+    fi
+    run_make ${NO_BUILD:+--assume-old=all} "${margs[@]}" run-prompt
 }
 
 function kodev-run() {
@@ -467,12 +475,17 @@ ANDROID TARGET:
                 if [[ -n "${VALUE}" ]]; then
                     declare -a "wrap=(${VALUE})"
                 else
-                    # Try to use friendly defaults for GDB:
-                    # - DDD is a slightly less nice GUI
-                    # - cgdb is a nice curses-based GDB front
-                    # - GDB standard CLI has a fallback
-                    if ! wrap=("$(command -v ddd cgdb gdb | head -n1)"); then
-                        die 1 "Couldn't find GDB."
+                    local -a candidates
+                    case "${OSTYPE}" in
+                        darwin*) candidates=(lldb) ;;
+                        # Try to use friendly defaults for GDB:
+                        # - DDD is a slightly less nice GUI
+                        # - cgdb is a nice curses-based GDB front
+                        # - GDB standard CLI has a fallback
+                        *) candidates=(ddd cgdb gdb) ;;
+                    esac
+                    if ! wrap=("$(command -v "${candidates[@]}" | head -n1)"); then
+                        die 1 "Couldn't find a supported debugger (${candidates[*]})."
                     fi
                 fi
                 if [[ ${#wrap[@]} -eq 1 ]]; then
@@ -575,7 +588,7 @@ ANDROID TARGET:
     fi
     # Build the final make command.
     local margs=()
-    if [[ "${target}" = android-* ]]; then
+    if [[ "${TARGET}" == 'android' ]]; then
         if [[ "$1" = *.apk ]]; then
             margs+=(ANDROID_APK="$1")
             NO_BUILD=1
@@ -640,36 +653,50 @@ $(build_options_help_msg 'BUILD' 'use existing build' '' 'default')
         esac
     done
     setup_target 'emulator'
-    check_submodules
     run_make ${NO_BUILD:+--assume-old=all} ${show_previous:+--assume-old=coverage-run} coverage${show_full:+-full}
 }
 
 function kodev-test() {
+    # shellcheck disable=1091
+    source "${CURDIR}/base/test-runner/runtests"
     HELP="
 USAGE: $0 ${CMD} <OPTIONS> <TEST_SUITE> <TEST_NAMES>
 
-    TEST_SUITE: [all|base|front]. Optional: default to all.
+    TEST_SUITE: [all|base|bench|front]. Optional: default to all.
     TEST_NAMES: if no TEST_NAMES are given, the full testsuite is run.
 
-OPTIONS:
-
-    -t, --tags=TAGS           only run tests with given tags
-
+${RUNTESTS_HELP}
 $(build_options_help_msg 'BUILD' 'use existing build' '' 'default')
 "
-    parse_options "t:${BUILD_GETOPT_SHORT}" "tags:,${BUILD_GETOPT_LONG}" '*' "$@"
-    # Handle first argument.
-    suite=''
-    set -- "${ARGS[@]}"
-    if [[ $# -ne 0 ]]; then
-        suite="$1"
+    parse_options "${RUNTESTS_GETOPT_SHORT}${BUILD_GETOPT_SHORT}" "${RUNTESTS_GETOPT_LONG},${BUILD_GETOPT_LONG}" '*' "$@"
+    # Forward all options except for most build options.
+    local targs=(${VERBOSE:+-v})
+    set -- "${OPTS[@]}"
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            # Those need special handling so an option-like argument is properly forwarded.
+            --busted | --meson)
+                targs+=("$1=$2")
+                shift
+                ;;
+            # Other.
+            *) targs+=("$1") ;;
+        esac
         shift
-        ARGS=("$@")
-    fi
-    # The rest (custom options included) is forwarded to busted.
+    done
+    set -- "${ARGS[@]}"
+    case "$1" in
+        all | base | bench | front)
+            suite="$1"
+            shift
+            ;;
+        *)
+            suite='all'
+            ;;
+    esac
+    targs+=("$@")
     setup_target 'emulator'
-    check_submodules
-    run_make ${NO_BUILD:+--assume-old=all} "test${suite}" BUSTED_OVERRIDES="$(print_quoted "${OPTS[@]}" "${ARGS[@]}")"
+    run_make ${NO_BUILD:+--assume-old=all} "test${suite}" T="$(print_quoted "${targs[@]}")"
 }
 
 # }}}
@@ -677,27 +704,7 @@ $(build_options_help_msg 'BUILD' 'use existing build' '' 'default')
 # Command: log. {{{
 
 function kodev-log() {
-    HELP="
-USAGE: $0 ${CMD} <OPTIONS>
-
-OPTIONS:
-
-    -d, --debug               more verbose logs (e.g., debug builds)
-"
-    parse_options 'd' '--debug' '0' "$@"
-    if command -v pidcat >/dev/null; then
-        if [[ -n "${KODEBUG}" ]]; then
-            pidcat "org.koreader.launcher"
-        else
-            pidcat org.koreader.launcher --min-level=I
-        fi
-    else
-        if [[ -n "${KODEBUG}" ]]; then
-            adb logcat 'KOReader:V ApkUpdater:V Assets:V Device:V dlopen:V EPD:V EventReceiver:V Lights:V Surface:V LuaJIT:V MainActivity:V NativeGlue:V NativeThread:V Timeout:V ActivityManager:V AndroidRuntime:V DEBUG:* *:F'
-        else
-            adb logcat 'KOReader:I MainActivity:V NativeGlue:V NativeThread:V ActivityManager:W AndroidRuntime:E DEBUG:* *:F'
-        fi
-    fi
+    env PYTHONEXECUTABLE="$0 ${CMD}" ./tools/logcat.py "$@"
 }
 
 # }}}

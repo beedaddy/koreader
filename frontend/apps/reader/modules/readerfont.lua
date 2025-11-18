@@ -31,7 +31,6 @@ local newly_added_fonts = nil -- not yet filled
 
 function ReaderFont:init()
     self:registerKeyEvents()
-    self:setupFaceMenuTable()
     self.ui.menu:registerToMainMenu(self)
     -- NOP our own gesture handling
     self.ges_events = nil
@@ -70,6 +69,14 @@ function ReaderFont:setupFaceMenuTable()
     cre = require("document/credocument"):engineInit()
     local face_list = cre.getFontFaces()
     face_list = self:sortFaceList(face_list)
+    -- list current font on top if sorted by recently selected
+    if G_reader_settings:isTrue("font_menu_sort_by_recently_selected") then
+        local idx = util.arrayContains(face_list, self.font_face)
+        if idx then
+            table.remove(face_list, idx)
+            table.insert(face_list, 1, self.font_face)
+        end
+    end
     for k, v in ipairs(face_list) do
         local font_filename, font_faceindex, is_monospace = cre.getFontFaceFilenameAndFaceIndex(v)
         if not font_filename then
@@ -120,6 +127,7 @@ function ReaderFont:setupFaceMenuTable()
             hold_callback = function(touchmenu_instance)
                 self:makeDefault(v, is_monospace, touchmenu_instance)
             end,
+            radio = true,
             checked_func = function()
                 return v == self.font_face
             end,
@@ -187,6 +195,8 @@ function ReaderFont:onReadSettings(config)
 
     self.font_family_fonts = config:readSetting("font_family_fonts") or {}
     self:updateFontFamilyFonts()
+
+    self:setupFaceMenuTable()
 
     -- Dirty hack: we have to add following call in order to set
     -- m_is_rendered(member of LVDocView) to true. Otherwise position inside
@@ -287,10 +297,15 @@ end
 
 function ReaderFont:onSetFont(face)
     if face and self.font_face ~= face then
-        self.font_face = face
-        self.ui.document:setFontFace(face)
-        -- signal readerrolling to update pos in new height
-        self.ui:handleEvent(Event:new("UpdatePos"))
+        for _, fontinfo in pairs(FontList.fontinfo) do
+            if fontinfo[1].name == face then
+                self.font_face = face
+                self.ui.document:setFontFace(face)
+                -- signal readerrolling to update pos in new height
+                self.ui:handleEvent(Event:new("UpdatePos"))
+                return
+            end
+        end
     end
 end
 
@@ -418,7 +433,7 @@ function ReaderFont:updateFontFamilyFonts()
     -- font (we have here in self.font_face) because of its increased bias (or the
     -- monospace font we also added with bias).
     -- So, we don't need to insert self.font_face in the list for unset family fonts,
-    -- which would otherwise need us to call updateFontFamilyFonts() everytime we
+    -- which would otherwise need us to call updateFontFamilyFonts() every time we
     -- change the main font face.
     local g_font_family_fonts = G_reader_settings:readSetting("cre_font_family_fonts", {})
     local family_fonts = {}
@@ -563,6 +578,7 @@ Enabling this will ignore such font names and make sure your preferred family fo
                         self:updateFontFamilyFonts()
                         if touchmenu_instance then touchmenu_instance:updateItems() end
                     end,
+                    radio = true,
                     checked_func = function()
                         if self.font_family_fonts[family_tag] == false then
                             return true
@@ -630,6 +646,7 @@ Enabling this will ignore such font names and make sure your preferred family fo
                         self:updateFontFamilyFonts()
                         if touchmenu_instance then touchmenu_instance:updateItems() end
                     end,
+                    radio = true,
                     checked_func = function()
                         if self.font_family_fonts[family_tag] then
                             return self.font_family_fonts[family_tag] == v
@@ -736,7 +753,7 @@ If that font happens to be part of this list already, it will be used first.]]),
             self.ui:handleEvent(Event:new("UpdatePos"))
         end,
         help_text = _([[
-Adjust the size of each fallback font so they all get the same x-height, and lowercase characters picked in them look similarly sized as those from the defaut font.
+Adjust the size of each fallback font so they all get the same x-height, and lowercase characters picked in them look similarly sized as those from the default font.
 This may help with Greek words among Latin text (as Latin fonts often do not have all the Greek characters), but may make Chinese or Indic characters smaller when picked from fallback fonts.]]),
         separator = true,
     })
@@ -777,7 +794,7 @@ This setting allows scaling all monospace fonts by this percentage so they can f
         text = _("Generate font test document"),
         callback = function()
             UIManager:show(ConfirmBox:new{
-                text = _("Would you like to generate an HTML document showing some sample text rendered with each available font?"),
+                text = _("Would you like to generate an HTML document showing a text sample rendered with each available font?"),
                 ok_callback = function()
                     self:buildFontsTestDocument()
                 end,
@@ -894,15 +911,33 @@ a { color: black; }
 <h1>%s</h1>
 ]], _("Available fonts test document"), _("AVAILABLE FONTS")))
     local face_list = cre.getFontFaces()
+    local new_font_idx = 1
+    if next(newly_added_fonts) then
+        -- Sort alphabetically, with new fonts first (as done in sortFaceList())
+        for i=1, #face_list do
+            if newly_added_fonts[face_list[i]] then
+                table.insert(face_list, new_font_idx, table.remove(face_list, i))
+                new_font_idx = new_font_idx + 1
+            end
+        end
+    end
     f:write("<div style='margin: 2em'>\n")
-    for _, font_name in ipairs(face_list) do
+    for i, font_name in ipairs(face_list) do
         local font_id = font_name:gsub(" ", "_"):gsub("'", "_")
-        f:write(string.format("  <div><a href='#%s'>%s</a></div>\n", font_id, font_name))
+        if i < new_font_idx then -- New fonts prepended with NEW on summary page
+            f:write(string.format("  <div><a href='#%s'>NEW: %s</a></div>\n", font_id, font_name))
+        else
+            f:write(string.format("  <div><a href='#%s'>%s</a></div>\n", font_id, font_name))
+        end
     end
     f:write("</div>\n\n")
-    for _, font_name in ipairs(face_list) do
+    for i, font_name in ipairs(face_list) do
         local font_id = font_name:gsub(" ", "_"):gsub("'", "_")
-        f:write(string.format("<h1 id='%s'>%s</h1>\n", font_id, font_name))
+        if i < new_font_idx then -- New fonts prepended with NEW in titles and TOC
+            f:write(string.format("<h1 id='%s'>NEW: %s</h1>\n", font_id, font_name))
+        else
+            f:write(string.format("<h1 id='%s'>%s</h1>\n", font_id, font_name))
+        end
         f:write(string.format("<div style='font-family: %s'>\n", font_name))
         f:write(html_sample)
         f:write("\n</div>\n\n")
@@ -910,7 +945,7 @@ a { color: black; }
     f:write("</body></html>\n")
     f:close()
     UIManager:show(ConfirmBox:new{
-        text = T(_("Document created as:\n%1\n\nWould you like to read it now?"), BD.filepath(font_test_final_path)),
+        text = T(_("Document created as:\n%1\n\nWould you like to view it now?"), BD.filepath(font_test_final_path)),
         ok_callback = function()
             UIManager:scheduleIn(1.0, function()
                 self.ui:switchDocument(font_test_final_path)
